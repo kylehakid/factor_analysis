@@ -105,6 +105,79 @@ def sar(data):
     return (data.close - _sar) / _sar
 
 
+# ---------------------------------------------------------------------------------------------
+def rwr(df: pd.DataFrame, n: int):
+    rwr = (df['close'] - df['open']) / (df['high'] - df['low'])
+    rwr_ma = ta.SMA(rwr, n)
+    return rwr_ma
+
+
+def aroon(df: pd.DataFrame, n: int):
+    aroon_up, aroon_dn = ta.AROON(df['high'], df['low'], n)
+    aroon = aroon_up - aroon_dn
+    return aroon_up, aroon_dn, aroon
+
+
+def tendstrength(df: pd.DataFrame, n: int):
+    # 计算x列两两差值的绝对值
+    diff_abs = df['close'].diff().abs()
+
+    # 计算前30个'diff_abs'的和
+    totalabs = diff_abs.rolling(window=n-1).sum()
+
+    # 计算前30个'x'的最后一个和第一个的差
+    first_x = df['close'].shift(n - 1)
+    last_first_diff = df['close'] - first_x
+    ts = last_first_diff / totalabs
+    return ts
+
+
+def boll(df: pd.DataFrame, n: int):
+    boll_mid = ta.SMA(df["close"], n)
+    boll_std = ta.STDDEV(df["close"], n)
+
+    dist = df['close'] - boll_mid
+    boll = dist / (2 * boll_std)
+
+    return boll
+
+
+def don(df: pd.DataFrame, n: int):
+    don_up = ta.MAX(df['close'], n)
+    don_down = ta.MIN(df['close'], n)
+    don_mid = 0.5 * (don_up + don_down)
+
+    don_dist = (don_up - don_down)
+    don = (df['close'] - don_mid) / don_dist
+    return don
+
+
+def sf01(df: pd.DataFrame, n: int):
+    avg = (df["open"] + df["high"] + df['low'] + df['close'])/4
+    avg2low = 2 * avg - df['low']
+    avg2high = 2 * avg - df['high']
+    max_avg2low = ta.MAX(avg2low, n)
+    min_avg2high = ta.MIN(avg2high, n)
+
+    sf01_mid = (max_avg2low + min_avg2high)/2
+    sf01_dis = (max_avg2low - min_avg2high)
+    sf01 = (df['close'] - sf01_mid) / sf01_dis
+    return sf01
+
+
+def cor_vol(df: pd.DataFrame, n: int):
+    cor_vol = ta.CORREL(df["volume"], df["close"], n)
+    return cor_vol
+
+
+def cor_oi(df: pd.DataFrame, n: int):
+    doi = df["open_interest"].diff(1)
+    doi = doi.fillna(0)
+    cor_oi = ta.CORREL(doi, df["close"], n)
+    return cor_oi
+
+
+# ---------------------------------------------------
 """
 如下为计算收益率的函数
 """
@@ -138,13 +211,14 @@ def long_liqka(data: pd.DataFrame, trs=0.03, delta_t=0.003, min_thre=0.015):
                 # print("第", i, "期", "第", j, "个")
                 # print("入场价格", data.open[i], "当期最低", data.low.iloc[j],
                 #       "止损价格", stop_loss, "下一期开盘", data.open.iloc[j+1], "pnl", stop_loss-data.open[i])
-                exit_price = max(data.open.iloc[j + 1], stop_loss)
+                # exit_price = max(data.open.iloc[j + 1], stop_loss)
+                exit_price = data.open.iloc[j + 1]
                 exit_prices.append(exit_price)
                 break
 
             # 最后一期还没有止损, 以最后一期open作为卖出价格
             if j >= len(data) - 1:
-                exit_prices.append(data.open.iloc[-1])
+                exit_prices.append(data.close.iloc[-1])
                 break
 
     return np.log(exit_prices / data.open) - 1 / 10000
@@ -181,7 +255,8 @@ def short_liqka(data: pd.DataFrame, trs=0.03, delta_t=0.003, min_thre=0.015):
                 # print("第", i, "期", "第", j, "个")
                 # print("入场价格", data.open[i], "当期最高", data.high.iloc[j],
                 #       "止损价格", stop_loss, "下一期开盘", data.open.iloc[j+1], "pnl", data.open[i]-stop_loss)
-                exit_price = min(data.open.iloc[j + 1], stop_loss)
+                # exit_price = min(data.open.iloc[j + 1], stop_loss)
+                exit_price = data.open.iloc[j + 1]
                 exit_prices.append(exit_price)
                 break
 
