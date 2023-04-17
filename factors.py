@@ -1,18 +1,24 @@
+from numba import njit, prange
+import concurrent.futures
+from numba import njit
 import numpy as np
 import pandas as pd
 import talib as ta
+import pandas as pd
+import numpy as np
+from concurrent.futures import ProcessPoolExecutor
+from numba import njit
 """
-适用于bardata的函数
+适用于bardata的函数, 因子值尽量约束在[-1,1]
 """
 
 
 def sma_diff(data, n, colums: str = "close") -> pd.Series or pd.DataFrame:
     """
-    根据data.close计算n期的sma.返回sma的差值/当期close    
-
+    根据data.close计算n期的sma.返回sma的差值/当期close
     """
     sma = data[colums].rolling(n).mean()
-    return (sma - data[colums]) / data[colums]
+    return (sma - data[colums]) / data[colums] * 100
 
 
 def ema_diff(data, n, colums: str = "close") -> pd.Series or pd.DataFrame:
@@ -20,7 +26,7 @@ def ema_diff(data, n, colums: str = "close") -> pd.Series or pd.DataFrame:
     根据data.close计算n期的ema.返回ema的差值/当期close
     """
     ema = data[colums].ewm(span=n).mean()
-    return (ema - data[colums]) / data[colums]
+    return (ema - data[colums]) / data[colums] * 100
 
 
 def sma_of_sma(data, n, m, colums: str = "close") -> pd.Series or pd.DataFrame:
@@ -29,7 +35,7 @@ def sma_of_sma(data, n, m, colums: str = "close") -> pd.Series or pd.DataFrame:
     """
     sma = data[colums].rolling(n).mean()
     sma_sma = sma.rolling(m).mean()
-    return (sma_sma - data[colums]) / data[colums]
+    return (sma_sma - data[colums]) / data[colums] * 100
 
 
 def ema_of_ema(data, n, m, colums: str = "close") -> pd.Series or pd.DataFrame:
@@ -38,7 +44,7 @@ def ema_of_ema(data, n, m, colums: str = "close") -> pd.Series or pd.DataFrame:
     """
     ema = data[colums].ewm(span=n).mean()
     ema_ema = ema.ewm(span=m).mean()
-    return (ema_ema - data[colums]) / data[colums]
+    return (ema_ema - data[colums]) / data[colums] * 100
 
 
 def high(data, n) -> pd.Series:
@@ -70,7 +76,7 @@ def wl(data, n) -> pd.Series:
 def MACD(data, fast, slow, mid):
     """
     计算n期的MACD
-    dif =  短线EMA - 长线EMA   
+    dif =  短线EMA - 长线EMA
     dea = EMA(diff, mid)   (diff的平滑移动平均线)
     hist = (diff - dea)  (柱状图)
     """
@@ -102,7 +108,7 @@ def sar(data):
     """
     _sar = ta.SAR(data.high, data.low, acceleration=0.002, maximum=0.2)
 
-    return (data.close - _sar) / _sar
+    return (data.close - _sar) / _sar * 100
 
 
 # ---------------------------------------------------------------------------------------------
@@ -182,30 +188,63 @@ def cor_oi(df: pd.DataFrame, n: int):
 如下为计算收益率的函数
 """
 
+# 计算n期的收益率
 
-def long_liqka(data: pd.DataFrame, trs=0.03, delta_t=0.003, min_thre=0.015):
+
+def rtn_shift(data: pd.Series, n):
     """
-    用liqka模型计算多头止损的对数收益率
+    计算n期的对数收益率
+    """
 
+    return (np.log(data / data.shift(n))-1/10000) * 100
+
+
+@njit
+def calculate_exit_prices_long(open_prices, low_prices, trs, delta_t, min_thre):
+    exit_prices = np.empty(len(open_prices))
+
+    for i in range(len(open_prices)):
+        liqka = 1.0
+        lowafterentry = low_prices[i]
+        stop_loss = lowafterentry * (1.0 - trs * liqka)
+
+        j = i
+        while j < len(open_prices):
+            if i != j:
+                liqka = max(1.0 - delta_t * (j - i), min_thre)
+                lowafterentry = max(low_prices[i:j])
+                stop_loss = lowafterentry * (1.0 - trs * liqka)
+
+            if j < len(low_prices) - 1 and low_prices[j] <= stop_loss:
+                exit_price = max(open_prices[j + 1], stop_loss)
+                exit_prices[i] = exit_price
+                break
+
+            if j >= len(low_prices) - 1:
+                exit_prices[i] = open_prices[-1]
+                break
+
+            j += 1
+
+    return exit_prices
+
+
+def long_liqka(data: pd.DataFrame, trs=0.03, delta_t=0.003, min_thre=0.5):
+    """
+    用liqka计算多头收益率
     trs: 止损比例
     delta_t: 每个tick的liqka减少量
     min_thre: 最小的liqka
-    用当期open作为买入价格, 通过之后的low小于止损价格时, 以min(下一期的open,止损价格)作为卖出价格
-    止损价格 = 入场后的close的最大价*(1-trs)*liqka
-    liqka = max(liqka - delta_t*期数,min_thre)
-    """
-    exit_prices = []
-    for i in range(len(data)):
-        for j in range(i, len(data)):
-            if i == j:
-                liqka = 1
-                lowafterentry = data.low.iloc[i]
-                stop_loss = lowafterentry * (1 - trs * liqka)
-            else:
-                liqka = max(1 - delta_t * (j - i), min_thre)
-                lowafterentry = max(data.low.iloc[i:j])  # 截止到上一期low的最大值
-                stop_loss = lowafterentry * (1 - (trs * liqka))
+    用当期的open价格买入, 通过其后行情的low价格计算止损价格, 用止损价格卖出, 计算收益率
 
+    """
+    open_prices = data.open.values
+    low_prices = data.low.values
+    exit_prices = calculate_exit_prices_long(
+        open_prices, low_prices, trs, delta_t, min_thre)
+    return (np.log(exit_prices/open_prices) - 1/10000)*100  # 1/10000是手续费
+
+<<<<<<< Updated upstream
             # 当期low小于止损价格, 以min(下一期的open,止损价格)作为卖出价格
             if j < len(data) - 1 and data.low.iloc[j] <= stop_loss:
                 # print("第", i, "期", "第", j, "个")
@@ -219,22 +258,52 @@ def long_liqka(data: pd.DataFrame, trs=0.03, delta_t=0.003, min_thre=0.015):
             # 最后一期还没有止损, 以最后一期open作为卖出价格
             if j >= len(data) - 1:
                 exit_prices.append(data.close.iloc[-1])
+=======
+
+@njit
+def calculate_exit_prices(open_prices, high_prices, trs, delta_t, min_thre):
+    exit_prices = np.empty(len(open_prices))
+
+    for i in range(len(open_prices)):
+        liqka = 1.0
+        highafterentry = high_prices[i]
+        stop_loss = highafterentry * (1.0 + trs * liqka)
+
+        j = i
+        while j < len(open_prices):
+            if i != j:
+                liqka = max(1.0 - delta_t * (j - i), min_thre)
+                highafterentry = min(high_prices[i:j])
+                stop_loss = highafterentry * (1.0 + trs * liqka)
+
+            if (j < len(high_prices) - 1) and (high_prices[j] >= stop_loss):
+                exit_price = min(open_prices[j + 1], stop_loss)
+                exit_prices[i] = exit_price
                 break
 
-    return np.log(exit_prices / data.open) - 1 / 10000
+            if j >= len(high_prices) - 1:
+                exit_prices[i] = open_prices[-1]
+>>>>>>> Stashed changes
+                break
+
+            j += 1
+
+    return exit_prices
 
 
-def short_liqka(data: pd.DataFrame, trs=0.03, delta_t=0.003, min_thre=0.015):
+def short_liqka(data: pd.DataFrame, trs=0.03, delta_t=0.003, min_thre=0.5):
     """
     用liqka模型计算空头止损的对数收益率
 
     trs: 止损比例
     delta_t: 每个tick的liqka减少量
     min_thre: 最小的liqka
-    用当期open作为卖出价格, 通过之后的high大于止损价格时, 以max(下一期的open,止损价格)作为买入价格
+    用当期open作为买入价格, 通过之后的high大于止损价格时, 以max(下一期的open,止损价格)作为卖出价格
     止损价格 = 入场后的close的最小价*(1+trs)*liqka
-    liqka = max(liqka - delta_t*期数,min_thre)
+    liqka = max(liqka - delta_t*期数, min_thre)
+
     """
+<<<<<<< Updated upstream
 
     exit_prices = []
     for i in range(len(data)):
@@ -266,3 +335,10 @@ def short_liqka(data: pd.DataFrame, trs=0.03, delta_t=0.003, min_thre=0.015):
                 break
 
     return np.log(data.open / exit_prices)
+=======
+    open_prices = data.open.values
+    high_prices = data.high.values
+    exit_prices = calculate_exit_prices(
+        open_prices, high_prices, trs, delta_t, min_thre)
+    return (np.log(open_prices / exit_prices) - 1/10000) * 100  # 1/10000是手续费
+>>>>>>> Stashed changes
