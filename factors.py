@@ -216,7 +216,7 @@ def calculate_exit_prices_long(open_prices, low_prices, trs, delta_t, min_thre):
                 stop_loss = lowafterentry * (1.0 - trs * liqka)
 
             if j < len(low_prices) - 1 and low_prices[j] <= stop_loss:
-                exit_price = max(open_prices[j + 1], stop_loss)
+                exit_price = open_prices[j + 1]
                 exit_prices[i] = exit_price
                 break
 
@@ -244,21 +244,6 @@ def long_liqka(data: pd.DataFrame, trs=0.03, delta_t=0.003, min_thre=0.5):
         open_prices, low_prices, trs, delta_t, min_thre)
     return (np.log(exit_prices/open_prices) - 1/10000)*100  # 1/10000是手续费
 
-<<<<<<< Updated upstream
-            # 当期low小于止损价格, 以min(下一期的open,止损价格)作为卖出价格
-            if j < len(data) - 1 and data.low.iloc[j] <= stop_loss:
-                # print("第", i, "期", "第", j, "个")
-                # print("入场价格", data.open[i], "当期最低", data.low.iloc[j],
-                #       "止损价格", stop_loss, "下一期开盘", data.open.iloc[j+1], "pnl", stop_loss-data.open[i])
-                # exit_price = max(data.open.iloc[j + 1], stop_loss)
-                exit_price = data.open.iloc[j + 1]
-                exit_prices.append(exit_price)
-                break
-
-            # 最后一期还没有止损, 以最后一期open作为卖出价格
-            if j >= len(data) - 1:
-                exit_prices.append(data.close.iloc[-1])
-=======
 
 @njit
 def calculate_exit_prices(open_prices, high_prices, trs, delta_t, min_thre):
@@ -277,13 +262,12 @@ def calculate_exit_prices(open_prices, high_prices, trs, delta_t, min_thre):
                 stop_loss = highafterentry * (1.0 + trs * liqka)
 
             if (j < len(high_prices) - 1) and (high_prices[j] >= stop_loss):
-                exit_price = min(open_prices[j + 1], stop_loss)
+                exit_price = open_prices[j + 1]
                 exit_prices[i] = exit_price
                 break
 
             if j >= len(high_prices) - 1:
                 exit_prices[i] = open_prices[-1]
->>>>>>> Stashed changes
                 break
 
             j += 1
@@ -303,42 +287,8 @@ def short_liqka(data: pd.DataFrame, trs=0.03, delta_t=0.003, min_thre=0.5):
     liqka = max(liqka - delta_t*期数, min_thre)
 
     """
-<<<<<<< Updated upstream
-
-    exit_prices = []
-    for i in range(len(data)):
-
-        for j in range(i, len(data)):
-
-            if i == j:
-                liqka = 1
-                highafterentry = data.high.iloc[i]
-                stop_loss = highafterentry * (1 + trs * liqka)
-            else:
-                liqka = max(1 - delta_t * (j - i), min_thre)
-                highafterentry = min(data.high.iloc[i:j])  # 截止到上一期high的最小值
-                stop_loss = highafterentry * (1 + (trs * liqka))
-
-            # 当期high大于止损价格, 以max(下一期的open,止损价格)作为买入价格
-            if (j < len(data) - 1) and (data.high.iloc[j] >= stop_loss):
-                # print("第", i, "期", "第", j, "个")
-                # print("入场价格", data.open[i], "当期最高", data.high.iloc[j],
-                #       "止损价格", stop_loss, "下一期开盘", data.open.iloc[j+1], "pnl", data.open[i]-stop_loss)
-                # exit_price = min(data.open.iloc[j + 1], stop_loss)
-                exit_price = data.open.iloc[j + 1]
-                exit_prices.append(exit_price)
-                break
-
-            # 最后一期还没有止损, 以最后一期open作为买入价格
-            if j >= len(data) - 1:
-                exit_prices.append(data.open.iloc[-1])
-                break
-
-    return np.log(data.open / exit_prices)
-=======
     open_prices = data.open.values
     high_prices = data.high.values
     exit_prices = calculate_exit_prices(
         open_prices, high_prices, trs, delta_t, min_thre)
     return (np.log(open_prices / exit_prices) - 1/10000) * 100  # 1/10000是手续费
->>>>>>> Stashed changes
