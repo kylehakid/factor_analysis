@@ -1,0 +1,10 @@
+# Python
+*.pyc
+*.pyo
+
+# Jupyter
+.ipynb_checkpoints
+
+# data
+*.csv
+*.feather
