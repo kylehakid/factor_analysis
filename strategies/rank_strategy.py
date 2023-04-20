@@ -17,19 +17,21 @@ from vpny_qmlt.trader.template import (
 from vpny_qmlt.trader.utility import Interval
 
 
-def MACD(data, fast, slow, mid):
+def low(data: np.ndarray, n: int) -> np.ndarray:
     """
-    计算n期的MACD
-    dif =  短线EMA - 长线EMA
-    dea = EMA(diff, mid)   (diff的平滑移动平均线)
-    hist = (diff - dea)  (柱状图)
+    计算n期的low与当前值差多少期/总期数
     """
-    dif, dea, hist = ta.MACD(data,
-                             fastperiod=fast,
-                             slowperiod=slow,
-                             signalperiod=mid)
-    signal = (dif - dea) / dea
-    return dif, dea, hist, signal
+    def rolling_window(a, window):
+        shape = a.shape[:-1] + (a.shape[-1] - window + 1, window)
+        strides = a.strides + (a.strides[-1],)
+        return np.lib.stride_tricks.as_strided(a, shape=shape, strides=strides)
+
+    def find_low_index(x):
+        return np.argmin(x)
+
+    rolling_data = rolling_window(data, n)
+    low_index = np.apply_along_axis(find_low_index, 1, rolling_data)
+    return (n - low_index) / n
 
 
 class TestDL(Signal):
@@ -40,6 +42,7 @@ class TestDL(Signal):
         self.am = ArrayManager(size=(self.sample_size))
 
         self.open_intenses = []
+        self.tradingdate = None
 
         # args
 
@@ -59,11 +62,14 @@ class TestDL(Signal):
         if not self.am.inited:
             return
 
-        dif, dea, hist, signal = MACD(self.am.close, fast=10, slow=60, mid=15)
+        if self.tradingdate != bar.trading_date:
+            self.tradingdate = bar.trading_date
+            self.log_info(f"new date {self.tradingdate}")
+        _low = low(self.am.close, 30)
         rank = pd.qcut(
-            dea, q=self.bins, labels=False, duplicates="drop")[-1]
+            _low, q=self.bins, labels=False, duplicates="drop")[-1]
         # print(rank)
-        if rank == 29:
+        if rank == 25:
             open_intense = 1
         self.update_intense(dt=bar.datetime, open_intense=open_intense)
 
