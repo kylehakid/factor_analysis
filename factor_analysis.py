@@ -1,11 +1,13 @@
-from numba import njit, prange
-from numba import njit
-import numpy as np
+# from numba import njit, prange
+# from numba import njit
+# import numpy as np
 import pandas as pd
-import talib as ta
+# import talib as ta
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import os
+import matplotlib.pyplot as plt
+
 
 """
 因子分析模块
@@ -32,7 +34,7 @@ class FactorAnalysis_ori:
             _ranks[i] = _rank
         return column, _ranks
 
-    def _cal_ranks(self, factors, rtn) -> dict:
+    def _cal_ranks(self, factors) -> dict:
         data = pd.concat([self.factors, self.rtn], axis=1)
         data.dropna(inplace=True)
         len_data = len(data)
@@ -56,7 +58,12 @@ class FactorAnalysis_ori:
         data.dropna(inplace=True)
         return data
 
-    def factor_ranked(self, factors: pd.DataFrame, rtn: pd.DataFrame, bins: int = 15, sample_size=30000, save=False, symbol=None) -> pd.DataFrame:
+    def cal_rank_results(self,
+                         factors: pd.DataFrame,
+                         rtn: pd.DataFrame,
+                         bins: int = 15,
+                         sample_size=30000,
+                         save=False, symbol=None, rank_df=None) -> pd.DataFrame:
         """
         根据该因子与之前sample_siez期因子值按照从小到大排序, 分成样本数量一致的bins份, 然后根据排序确定该因子值的rank
         计算每个rank因子对应收益率的mean, win_rate
@@ -74,7 +81,7 @@ class FactorAnalysis_ori:
         self.sample_size = sample_size
         self.factor_ranked_run = True
 
-        factors_col = self.factors.columns
+        factors_cols = self.factors.columns
         rtn_cols = self.rtn.columns
 
         results_df = pd.DataFrame()
@@ -82,28 +89,15 @@ class FactorAnalysis_ori:
         if len(factors) != len(rtn):
             raise ValueError("factors and rtn must have the same length")
 
-        # n = len(factors)
-        # if n >= 10000:
-        #     rank_df = pd.DataFrame()
-        #     n_batches = int((n / (sample_size + 10000)))+1
-        #     batch_size = (sample_size + 10000)
-        #     print("数据太大,分成{}份计算".format(n_batches))
+        if rank_df is None:
+            rk = 0
+            print("计算", symbol, "的rank_df")
+            rank_df = self._cal_ranks(factors, rtn)
+        else:
+            rk = 1
+            print("rank_df已经存在,直接读取")
 
-        #     for idx in range(n_batches):
-        #         print("\n", "计算第{}份".format(idx+1))
-        #         start_idx = idx * batch_size - idx*sample_size
-        #         end_idx = min((idx + 1) * batch_size, n)
-        #         factors_batch = factors.iloc[start_idx:end_idx]
-        #         rtn_batch = rtn.iloc[start_idx:end_idx]
-
-        #         _rank_df = self._cal_ranks(factors_batch, rtn_batch)
-        #         rank_df = pd.concat([rank_df, _rank_df], axis=0)
-        #         rank_df = rank_df.groupby(rank_df.index).first()
-
-        # else:
-        rank_df = self._cal_ranks(factors, rtn)
-
-        for i in factors_col:
+        for i in factors_cols:
             count_df = rank_df.groupby(f"{i}_rank")["open"].count()
             count_df.rename("counts", inplace=True)
             mean_rtn = rank_df.groupby(f"{i}_rank")[
@@ -125,23 +119,31 @@ class FactorAnalysis_ori:
                     os.mkdir("data")
                 if symbol is not None:
                     rank_df.to_parquet(
-                        f".//data//{symbol}_{bins}_rank_df.parquet")
+                        f".//data//{symbol}_{sample_size}_{bins}_rank_df.parquet")
                     results_df.to_parquet(
-                        f".//data//{symbol}_{bins}_results_df.parquet")
+                        f".//data//{symbol}_{sample_size}_{bins}_results_df.parquet")
                 else:
                     symbol = "symbol"
                     rank_df.to_parquet(
-                        f".//data//{symbol}_{bins}_rank_df.parquet")
+                        f".//data//{symbol}_{sample_size}_{bins}_rank_df.parquet")
                     results_df.to_parquet(
-                        f".//data//{symbol}_{bins}_results_df.parquet")
+                        f".//data//{symbol}_{sample_size}_{bins}_results_df.parquet")
+        if rk == 0:
+            return rank_df, results_df
+        if rk == 1:
+            return results_df
 
-        return rank_df, results_df
-
-    def factors_select(self, results_df, win_rate=50, rtn=0.1, count=None):
+    def factors_select(self, results_df, win_rate=0, rtn=-1, count=None, sorted="mean_rtn"):
         """
         根据条件选择满足
         1.胜率大于win_rate且收益率大于rtn的因子
         2.因子的样本数量大于count, 如果count不填写, 则默认为sample_size//bins的一半, 如果一半小于500, 则默认为500
+        args:
+        results_df: 每个因子的rank对应收益率的mean, win_rate
+        win_rate: 胜率
+        rtn: 收益率
+        count: 样本数量
+        sorted: 排序方式,可选"win_rate", "rtn"
         """
         df_idx = []
         mean_s = pd.Series(dtype=float)
@@ -155,8 +157,6 @@ class FactorAnalysis_ori:
                 0], "counts"].sum()
             bins = len(results_df.index.get_level_values(1).unique())
 
-        if count == None:
-            count = max((sample_size//bins)*0.5, 500)
         # 遍历results_df的每一列
         for col_name in results_df.columns:
             # 创建一个新的Series，其中包含该列的数据，其索引为三层MultiIndex
@@ -177,9 +177,99 @@ class FactorAnalysis_ori:
         df.index = pd.MultiIndex.from_tuples(
             df_idx, names=('factor', 'rank', "return"))
         df.columns = ["mean_rtn", "win_rate", "count"]
-        df.sort_values(by="win_rate", inplace=True, ascending=False)
+        df.sort_values(by=sorted, inplace=True, ascending=False)
 
+        if count == None:
+            count = max((sample_size//bins)*0.5, 500)
         df = df[(df["mean_rtn"] > rtn) & (
             df["win_rate"] > win_rate) & (df["count"] > count)]
 
         return df
+
+    def cumsum_plot(self,
+                    rank_df,
+                    results_df,
+                    n=3,  # 画出前n个因子的图
+                    show_dt=False,  # 画图是否显示时间信息-因为数据并非时间连续, 选True会导致图像不连续
+                    sorted="mean_rtn",  # 可以选择"mean_rtn"或者"win_rate"
+                    selected_args={"win_rate": 0, "rtn": -1, "count": None}):
+        """
+        画出因子的累计收益率图
+        args:
+            n: 画出前n个因子的图
+            show_dt: 画图是否显示时间信息-因为数据并非时间连续, 选True会导致图像不连续
+            sorted: 可以选择"mean_rtn"或者"win_rate"
+            selected_args: 选择因子的条件, 默认为胜率大于50, 收益率大于0.1, 样本数量大于500
+        """
+        for k, v in selected_args.items():
+            if k == "win_rate":
+                win_rate = v
+            if k == "rtn":
+                rtn = v
+            if k == "count":
+                count = v
+
+        seletced = self.factors_select(
+            results_df, win_rate=win_rate, rtn=rtn, count=count)
+        seletced = seletced.sort_values(sorted, ascending=False)
+        w = seletced["win_rate"].values
+        r = seletced["mean_rtn"].values
+        factor = seletced.index.get_level_values(0)
+        rank = seletced.index.get_level_values(1)
+        rtn = seletced.index.get_level_values(2)
+        # print(factor, rank, rtn)
+
+        for i in range(n):
+            s = rank_df[rtn[i][:-5]][rank_df[factor[i]+"_rank"] == rank[i]]
+            s = s.cumsum()/100
+            if show_dt == False:
+                s.reset_index(inplace=True, drop=True)
+            fig, ax = plt.subplots(figsize=(10, 4))
+            ax.plot(s)
+            ax.set_ylabel("cumsum", fontsize=16)
+            ax.set_title(
+                f"{factor[i]}_{rank[i]} :{s.name}    win_rate:{round(w[i],2)}  mean_rtn:{round(r[i],3)}", fontsize=22)
+            plt.show()
+
+
+"""
+#修复错误的shift_rtn
+run = 0
+if run == 1:
+    data = pd.read_parquet(".//data//factors.parquet")
+    data.set_index("datetime", inplace=True, drop=True)
+    shift_cols = [col for col in data.columns if "_rtn" in col]
+    rtns = data[shift_cols]
+    if os.path.exists(".//data//mod//"):
+        pass
+    else:
+        os.mkdir(".//data//mod//")
+
+    for i in os.listdir(".//data//"):
+        if "rank_df" in i:
+            rank_df = pd.read_parquet(".//data//"+i)
+            rank_df = rank_df.drop(columns=shift_cols)
+            new_rank_df = pd.merge(rank_df, rtns, left_index=True, right_index=True)
+            if len(new_rank_df) == len(rank_df):
+                new_rank_df.to_parquet(".//data//mod//"+i)
+                print(i, "修复完成")
+            else:
+                raise ValueError("长度不一致")       
+
+# 修复错误的results_df
+from importlib import reload
+import factor_analysis as fa
+reload(fa)
+fal=    fa.FactorAnalysis_ori()
+for i in os.listdir(".//data//mod//"):
+    if "rank_df" in i:
+        sample_size = int(i.split("_")[1])
+        bins  = int(i.split("_")[2])
+        print(i, sample_size, bins)
+        rank_df = pd.read_parquet(".//data//mod//"+i)
+        
+        rank_df, results_df = fal.factor_ranked(
+            factors, rtn, save=True, sample_size=sample_size, bins=bins, rank_df=rank_df)
+        print(i, "修复完成")
+
+"""

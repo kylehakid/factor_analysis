@@ -29,13 +29,22 @@ def ema_diff(data, n, colums: str = "close") -> pd.Series or pd.DataFrame:
     return (ema - data[colums]) / data[colums] * 100
 
 
-def sma_of_sma(data, n, m, colums: str = "close") -> pd.Series or pd.DataFrame:
+def sma_of_sma(data, long, short, colums: str = "close") -> pd.Series or pd.DataFrame:
     """
     根据data.close计算n期的sma, 再计算m期的sma.返回m期sma的差值/当期close
     """
-    sma = data[colums].rolling(n).mean()
-    sma_sma = sma.rolling(m).mean()
+    sma = data[colums].rolling(short).mean()
+    sma_sma = sma.rolling(long).mean()
     return (sma_sma - data[colums]) / data[colums] * 100
+
+
+def sma_diff_sma(data, long, short, colums: str = "close") -> pd.Series or pd.DataFrame:
+    """
+    根据data.close计算n期的sma, 再计算m期的sma.返回m期sma的差值/当期close
+    """
+    sma1 = data[colums].rolling(long).mean()
+    sma2 = sma1.rolling(short).mean()
+    return (sma2-sma1)/sma1*100
 
 
 def ema_of_ema(data, n, m, colums: str = "close") -> pd.Series or pd.DataFrame:
@@ -113,7 +122,7 @@ def sar(data):
 
 # ---------------------------------------------------------------------------------------------
 def rwr(df: pd.DataFrame, n: int):
-    rwr = (df['close'] - df['open']) / (df['high'] - df['low'])
+    rwr = (df['close'] - df['open']) / (df['high'] - df['low']+0.000000001)
     rwr_ma = ta.SMA(rwr, n)
     return rwr_ma
 
@@ -193,10 +202,10 @@ def cor_oi(df: pd.DataFrame, n: int):
 
 def rtn_shift(data: pd.Series, n):
     """
-    计算n期的对数收益率
+    计算n期后的对数收益率,注意这里的n应该取负数
     """
 
-    return (np.log(data / data.shift(n))-1/10000) * 100
+    return (np.log(data.shift(n)/data) - 2/10000) * 100
 
 
 @njit
@@ -242,7 +251,7 @@ def long_liqka(data: pd.DataFrame, trs=0.03, delta_t=0.003, min_thre=0.5):
     low_prices = data.low.values
     exit_prices = calculate_exit_prices_long(
         open_prices, low_prices, trs, delta_t, min_thre)
-    return (np.log(exit_prices/open_prices) - 1/10000)*100  # 1/10000是手续费
+    return (np.log(exit_prices/open_prices) - 2/10000)*100  # 1/10000是手续费
 
 
 @njit
@@ -291,4 +300,4 @@ def short_liqka(data: pd.DataFrame, trs=0.03, delta_t=0.003, min_thre=0.5):
     high_prices = data.high.values
     exit_prices = calculate_exit_prices(
         open_prices, high_prices, trs, delta_t, min_thre)
-    return (np.log(open_prices / exit_prices) - 1/10000) * 100  # 1/10000是手续费
+    return (np.log(open_prices / exit_prices) - 2/10000) * 100  # 1/10000是手续费

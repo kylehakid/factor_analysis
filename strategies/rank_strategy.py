@@ -17,23 +17,6 @@ from vpny_qmlt.trader.template import (
 from vpny_qmlt.trader.utility import Interval
 
 
-def low(data: np.ndarray, n: int) -> np.ndarray:
-    """
-    计算n期的low与当前值差多少期/总期数
-    """
-    def rolling_window(a, window):
-        shape = a.shape[:-1] + (a.shape[-1] - window + 1, window)
-        strides = a.strides + (a.strides[-1],)
-        return np.lib.stride_tricks.as_strided(a, shape=shape, strides=strides)
-
-    def find_low_index(x):
-        return np.argmin(x)
-
-    rolling_data = rolling_window(data, n)
-    low_index = np.apply_along_axis(find_low_index, 1, rolling_data)
-    return (n - low_index) / n
-
-
 class TestDL(Signal):
     def __init__(self, engine, signal_name, interval, windows, vt_symbols, setting):
         super().__init__(engine, signal_name, interval,
@@ -49,7 +32,7 @@ class TestDL(Signal):
     def on_init(self):
         self.log_info("信号初始化")
 
-        self.load_bar(days=300)
+        self.load_bar(days=30)
         self.subscribe_bar(
             self.vt_symbols, Interval.MINUTE, 1, self.on_1_bar)
 
@@ -62,14 +45,14 @@ class TestDL(Signal):
         if not self.am.inited:
             return
 
-        if self.tradingdate != bar.trading_date:
-            self.tradingdate = bar.trading_date
-            self.log_info(f"new date {self.tradingdate}")
-        _low = low(self.am.close, 30)
+        # if self.tradingdate != bar.trading_date:
+        #     self.tradingdate = bar.trading_date
+        #     self.log_info(f"new date {self.tradingdate}")
+
         rank = pd.qcut(
-            _low, q=self.bins, labels=False, duplicates="drop")[-1]
+            self.am.close, q=self.bins, labels=False, duplicates="drop")[-1]
         # print(rank)
-        if rank == 25:
+        if rank == 9:
             open_intense = 1
         self.update_intense(dt=bar.datetime, open_intense=open_intense)
 
@@ -134,7 +117,7 @@ class Test01(Template):
                 if timecount > 30 and vt_orderid in self.active_limit_orders:
                     self.cancel_order(vt_orderid)  # 挂单超过30分钟,撤单
                     self.cancle_count += 1
-                    if self.cancel_count % 10 == 0:
+                    if self.cancle_count % 10 == 0:
                         print("cancel order count:{}".format(
                             self.cancle_count))
                     # print("cancel order:{}".format(vt_orderid))
