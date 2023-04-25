@@ -97,7 +97,7 @@ class FactorAnalysis_ori:
             # 计算自相关系数
             below_threshold_indices = {}
             for col in rolling_mean.columns:
-                lag = 10000
+                lag = 1000
                 correlations = acf(
                     rolling_mean[col].dropna(), nlags=lag, fft=True)
                 # 计算因子有效周期
@@ -121,9 +121,11 @@ class FactorAnalysis_ori:
             rk = 1
             print("rank_df已经存在,直接读取")
 
+        rank_df: pd.DataFrame
+
         for i in factors_cols:
-            count_df = rank_df.groupby(f"{i}_rank")["open"].count()
-            count_df.rename("counts", inplace=True)
+            count_df = rank_df.groupby(f"{i}_rank")[
+                "open"].count().rename("counts")
 
             mean_rtn = rank_df.groupby(f"{i}_rank")[
                 [rtn for rtn in rtn_cols]].mean()
@@ -137,11 +139,10 @@ class FactorAnalysis_ori:
                 col + '_effective_period' for col in effective_period.columns]
             result = pd.merge(
                 mean_rtn, win_rate, on=f"{i}_rank", how="outer", suffixes=("_mean", "_win_rate")).merge(count_df, on=f"{i}_rank", how="outer").merge(effective_period, on=f"{i}_rank", how="outer")
-            # result.index.name = "rank"
+
             result.index = pd.MultiIndex.from_product(
                 [[i], result.index], names=["factor", "rank"])
             results_df = pd.concat([results_df, result], axis=0)
-            self.results = results_df
             if rk == 0:
                 if save is True:
                     if os.path.exists("data"):
@@ -236,15 +237,6 @@ class FactorAnalysis_ori:
             df["win_rate"] > win_rate) & (df["count"] > count)]
 
         return df
-    """
-    from joblib import Parallel, delayed
-def applyParallel(dfGrouped, func):
-res = Parallel(n_jobs=16)(delayed(func)(group) for name, group in dfGrouped)
-return pd.concat(res)
-for col in tqdm(alpha_list):
-result.loc[:,col] = applyParallel(result[col].groupby('tradingdate',group_keys=False), boxplot)
-解析这段代码
-    """
 
     def cumsum_plot(self,
                     rank_df,
