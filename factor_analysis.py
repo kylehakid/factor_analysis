@@ -1,13 +1,12 @@
 # from numba import njit, prange
 # from numba import njit
-# import numpy as np
+import numpy as np
 import pandas as pd
 # import talib as ta
-from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import os
 import matplotlib.pyplot as plt
-
+from statsmodels.tsa.stattools import acf
 
 """
 因子分析模块
@@ -63,6 +62,8 @@ class FactorAnalysis_ori:
                          rtn: pd.DataFrame,
                          bins: int = 15,
                          sample_size=30000,
+                         window=20,
+                         threshold=0.7,
                          save=False, symbol=None, rank_df=None) -> pd.DataFrame:
         """
         根据该因子与之前sample_siez期因子值按照从小到大排序, 分成样本数量一致的bins份, 然后根据排序确定该因子值的rank
@@ -72,6 +73,8 @@ class FactorAnalysis_ori:
         args:
         factors: 因子
         rtn: 收益率
+        window: 计算因子有效期的滚动平均周期
+        threhold: 计算因子有效期的自相关系数最低值, 当低于这个值时认定有效期结束
         bins: 根据因子值把因子分成多少组
         sample_size: 每份样本数量
         """
@@ -86,6 +89,27 @@ class FactorAnalysis_ori:
 
         results_df = pd.DataFrame()
         count_df = pd.DataFrame()
+
+        # 计算因子有效期
+        def calculate_effective_period(df, window=window, threshold=threshold):
+            # 计算滚动平均
+            rolling_mean = df.rolling(window=window).mean()
+            # 计算自相关系数
+            below_threshold_indices = {}
+            for col in rolling_mean.columns:
+                lag = 10000
+                correlations = acf(
+                    rolling_mean[col].dropna(), nlags=lag, fft=True)
+                # 计算因子有效周期
+                below_threshold_indice = np.where(correlations < threshold)[0]
+
+                if len(below_threshold_indice) > 0:
+                    below_threshold_indice = below_threshold_indice[0]
+                else:
+                    below_threshold_indice = None
+                below_threshold_indices[col] = below_threshold_indice
+            return pd.DataFrame(below_threshold_indices, index=[0])
+
         if len(factors) != len(rtn):
             raise ValueError("factors and rtn must have the same length")
 
@@ -100,37 +124,57 @@ class FactorAnalysis_ori:
         for i in factors_cols:
             count_df = rank_df.groupby(f"{i}_rank")["open"].count()
             count_df.rename("counts", inplace=True)
+
             mean_rtn = rank_df.groupby(f"{i}_rank")[
                 [rtn for rtn in rtn_cols]].mean()
+
             win_rate = rank_df.groupby(f"{i}_rank")[
                 [rtn for rtn in rtn_cols]].apply(lambda x: (x > 0).mean()*100)
+
+            effective_period = rank_df.groupby(f"{i}_rank")[
+                [rtn for rtn in rtn_cols]].apply(lambda x: calculate_effective_period(x, window, threshold))
+            effective_period.columns = [
+                col + '_effective_period' for col in effective_period.columns]
             result = pd.merge(
-                mean_rtn, win_rate, on=f"{i}_rank", how="outer", suffixes=("_mean", "_win_rate")).merge(count_df, on=f"{i}_rank", how="outer")
+                mean_rtn, win_rate, on=f"{i}_rank", how="outer", suffixes=("_mean", "_win_rate")).merge(count_df, on=f"{i}_rank", how="outer").merge(effective_period, on=f"{i}_rank", how="outer")
             # result.index.name = "rank"
             result.index = pd.MultiIndex.from_product(
                 [[i], result.index], names=["factor", "rank"])
             results_df = pd.concat([results_df, result], axis=0)
             self.results = results_df
+            if rk == 0:
+                if save is True:
+                    if os.path.exists("data"):
+                        pass
+                    else:
+                        os.mkdir("data")
+                    if symbol is not None:
+                        rank_df.to_parquet(
+                            f".//data//{symbol}_{sample_size}_{bins}_rank_df.parquet")
+                        results_df.to_parquet(
+                            f".//data//{symbol}_{sample_size}_{bins}_results_df.parquet")
+                    else:
+                        symbol = "symbol"
+                        rank_df.to_parquet(
+                            f".//data//{symbol}_{sample_size}_{bins}_rank_df.parquet")
+                        results_df.to_parquet(
+                            f".//data//{symbol}_{sample_size}_{bins}_results_df.parquet")
+                return rank_df, results_df
 
-            if save == True:
+        if rk == 1:
+            if save is True:
                 if os.path.exists("data"):
                     pass
                 else:
                     os.mkdir("data")
                 if symbol is not None:
-                    rank_df.to_parquet(
-                        f".//data//{symbol}_{sample_size}_{bins}_rank_df.parquet")
+
                     results_df.to_parquet(
                         f".//data//{symbol}_{sample_size}_{bins}_results_df.parquet")
                 else:
                     symbol = "symbol"
-                    rank_df.to_parquet(
-                        f".//data//{symbol}_{sample_size}_{bins}_rank_df.parquet")
                     results_df.to_parquet(
                         f".//data//{symbol}_{sample_size}_{bins}_results_df.parquet")
-        if rk == 0:
-            return rank_df, results_df
-        if rk == 1:
             return results_df
 
     def factors_select(self, results_df, win_rate=0, rtn=-1, count=None, sorted="mean_rtn"):
@@ -139,7 +183,7 @@ class FactorAnalysis_ori:
         1.胜率大于win_rate且收益率大于rtn的因子
         2.因子的样本数量大于count, 如果count不填写, 则默认为sample_size//bins的一半, 如果一半小于500, 则默认为500
         args:
-        results_df: 每个因子的rank对应收益率的mean, win_rate
+        results_df: 每个因子的rank对应收益率的mean, win_rate,effective_period
         win_rate: 胜率
         rtn: 收益率
         count: 样本数量
@@ -149,7 +193,8 @@ class FactorAnalysis_ori:
         mean_s = pd.Series(dtype=float)
         win_rate_s = pd.Series(dtype=float)
         count_s = pd.Series(dtype=int)
-        if self.factor_ranked_run == True:
+        effective_period_s = pd.Series(dtype=int)
+        if self.factor_ranked_run is True:
             sample_size = self.sample_size
             bins = self.bins
         else:
@@ -159,9 +204,10 @@ class FactorAnalysis_ori:
 
         # 遍历results_df的每一列
         for col_name in results_df.columns:
+
             # 创建一个新的Series，其中包含该列的数据，其索引为三层MultiIndex
             if "mean" in col_name:
-                _df_idx = [(idx[0], idx[1], col_name)
+                _df_idx = [(idx[0], idx[1], col_name[:-5])
                            for idx in results_df.index]
                 df_idx.extend(_df_idx)
 
@@ -172,19 +218,33 @@ class FactorAnalysis_ori:
             if "win_rate" in col_name:
                 _win_rate_s = pd.Series(results_df[col_name].values)
                 win_rate_s = pd.concat([win_rate_s, _win_rate_s], axis=0)
+            if "effective_period" in col_name:
+                _effective_period_s = pd.Series(results_df[col_name].values)
+                effective_period_s = pd.concat(
+                    [effective_period_s, _effective_period_s], axis=0)
 
-        df = pd.concat([mean_s, win_rate_s, count_s], axis=1)
+        df = pd.concat([mean_s, win_rate_s, count_s,
+                       effective_period_s], axis=1)
         df.index = pd.MultiIndex.from_tuples(
             df_idx, names=('factor', 'rank', "return"))
-        df.columns = ["mean_rtn", "win_rate", "count"]
+        df.columns = ["mean_rtn", "win_rate", "count", "effective_period"]
         df.sort_values(by=sorted, inplace=True, ascending=False)
 
-        if count == None:
+        if count is None:
             count = max((sample_size//bins)*0.5, 500)
         df = df[(df["mean_rtn"] > rtn) & (
             df["win_rate"] > win_rate) & (df["count"] > count)]
 
         return df
+    """
+    from joblib import Parallel, delayed
+def applyParallel(dfGrouped, func):
+res = Parallel(n_jobs=16)(delayed(func)(group) for name, group in dfGrouped)
+return pd.concat(res)
+for col in tqdm(alpha_list):
+result.loc[:,col] = applyParallel(result[col].groupby('tradingdate',group_keys=False), boxplot)
+解析这段代码
+    """
 
     def cumsum_plot(self,
                     rank_df,
@@ -220,9 +280,9 @@ class FactorAnalysis_ori:
         # print(factor, rank, rtn)
 
         for i in range(n):
-            s = rank_df[rtn[i][:-5]][rank_df[factor[i]+"_rank"] == rank[i]]
+            s = rank_df[rtn[i]][rank_df[factor[i]+"_rank"] == rank[i]]
             s = s.cumsum()/100
-            if show_dt == False:
+            if show_dt is False:
                 s.reset_index(inplace=True, drop=True)
             fig, ax = plt.subplots(figsize=(10, 4))
             ax.plot(s)

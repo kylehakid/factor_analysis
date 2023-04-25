@@ -1,12 +1,9 @@
-from numba import njit, prange
-import concurrent.futures
-from numba import njit
+
 import numpy as np
 import pandas as pd
 import talib as ta
-import pandas as pd
-import numpy as np
-from concurrent.futures import ProcessPoolExecutor
+# from concurrent.futures import ProcessPoolExecutor
+
 from numba import njit
 """
 适用于bardata的函数, 因子值尽量约束在[-1,1]
@@ -251,7 +248,7 @@ def long_liqka(data: pd.DataFrame, trs=0.03, delta_t=0.003, min_thre=0.5):
     low_prices = data.low.values
     exit_prices = calculate_exit_prices_long(
         open_prices, low_prices, trs, delta_t, min_thre)
-    return (np.log(exit_prices/open_prices) - 2/10000)*100  # 1/10000是手续费
+    return (np.log(exit_prices/open_prices) - 2/10000)*100  # 2/10000是手续费
 
 
 @njit
