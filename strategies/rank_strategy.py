@@ -52,7 +52,7 @@ class TestDL(Signal):
         rank = pd.qcut(
             self.am.close, q=self.bins, labels=False, duplicates="drop")[-1]
         # print(rank)
-        if rank == 9:
+        if rank == 0:
             open_intense = 1
         self.update_intense(dt=bar.datetime, open_intense=open_intense)
 
