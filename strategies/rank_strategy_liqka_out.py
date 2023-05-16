@@ -130,14 +130,12 @@ class Test01(Template):
             # if self.pos > 5 or self.pos < -5:
             #     raise Exception(self.pos)
             open_intense = self.get_open_intense()
+            if open_intense > 0:
+                long_signal = True
+            elif open_intense < 0:
+                short_signal = True
             if -30 <= self.pos <= 30:  # 限制持仓数量
                 if not self.get_at_risk():
-                    if open_intense > 0:
-                        long_signal = True
-
-                    elif open_intense < 0:
-                        short_signal = True
-
                     if not self.active_limit_orders:
                         if (long_signal is True) and (self.long_rtn_trades > 0):
                             self.send_order(vt_symbol=bar.vt_symbol, direction=Direction.LONG,
