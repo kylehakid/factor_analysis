@@ -25,7 +25,7 @@ class FactorAnalysis_ori:
     def _cal_rank_parallel(column, factors, bins, sample_size, len_data):
         _ranks = [None for i in range(len_data)]
         if len_data < sample_size:
-            raise ("数据量小于sample_size")
+            raise "数据量小于sample_size"
         for i in range(sample_size, len_data):
             _rank = pd.qcut(factors[column].iloc[i + 1 - sample_size:i + 1],
                             q=bins,
