@@ -1,12 +1,8 @@
-from numba import njit, prange
-import concurrent.futures
-from numba import njit
 import numpy as np
 import pandas as pd
 import talib as ta
-import pandas as pd
-import numpy as np
-from concurrent.futures import ProcessPoolExecutor
+# from concurrent.futures import ProcessPoolExecutor
+
 from numba import njit
 """
 适用于bardata的函数, 因子值尽量约束在[-1,1]
@@ -29,13 +25,28 @@ def ema_diff(data, n, colums: str = "close") -> pd.Series or pd.DataFrame:
     return (ema - data[colums]) / data[colums] * 100
 
 
-def sma_of_sma(data, n, m, colums: str = "close") -> pd.Series or pd.DataFrame:
+def sma_of_sma(data,
+               long,
+               short,
+               colums: str = "close") -> pd.Series or pd.DataFrame:
     """
     根据data.close计算n期的sma, 再计算m期的sma.返回m期sma的差值/当期close
     """
-    sma = data[colums].rolling(n).mean()
-    sma_sma = sma.rolling(m).mean()
+    sma = data[colums].rolling(short).mean()
+    sma_sma = sma.rolling(long).mean()
     return (sma_sma - data[colums]) / data[colums] * 100
+
+
+def sma_diff_sma(data,
+                 long,
+                 short,
+                 colums: str = "close") -> pd.Series or pd.DataFrame:
+    """
+    根据data.close计算n期的sma, 再计算m期的sma.返回m期sma的差值/当期close
+    """
+    sma1 = data[colums].rolling(long).mean()
+    sma2 = sma1.rolling(short).mean()
+    return (sma2 - sma1) / sma1 * 100
 
 
 def ema_of_ema(data, n, m, colums: str = "close") -> pd.Series or pd.DataFrame:
@@ -113,7 +124,7 @@ def sar(data):
 
 # ---------------------------------------------------------------------------------------------
 def rwr(df: pd.DataFrame, n: int):
-    rwr = (df['close'] - df['open']) / (df['high'] - df['low'])
+    rwr = (df['close'] - df['open']) / (df['high'] - df['low'] + 0.000000001)
     rwr_ma = ta.SMA(rwr, n)
     return rwr_ma
 
@@ -129,7 +140,7 @@ def tendstrength(df: pd.DataFrame, n: int):
     diff_abs = df['close'].diff().abs()
 
     # 计算前30个'diff_abs'的和
-    totalabs = diff_abs.rolling(window=n-1).sum()
+    totalabs = diff_abs.rolling(window=n - 1).sum()
 
     # 计算前30个'x'的最后一个和第一个的差
     first_x = df['close'].shift(n - 1)
@@ -159,13 +170,13 @@ def don(df: pd.DataFrame, n: int):
 
 
 def sf01(df: pd.DataFrame, n: int):
-    avg = (df["open"] + df["high"] + df['low'] + df['close'])/4
+    avg = (df["open"] + df["high"] + df['low'] + df['close']) / 4
     avg2low = 2 * avg - df['low']
     avg2high = 2 * avg - df['high']
     max_avg2low = ta.MAX(avg2low, n)
     min_avg2high = ta.MIN(avg2high, n)
 
-    sf01_mid = (max_avg2low + min_avg2high)/2
+    sf01_mid = (max_avg2low + min_avg2high) / 2
     sf01_dis = (max_avg2low - min_avg2high)
     sf01 = (df['close'] - sf01_mid) / sf01_dis
     return sf01
@@ -193,14 +204,15 @@ def cor_oi(df: pd.DataFrame, n: int):
 
 def rtn_shift(data: pd.Series, n):
     """
-    计算n期的对数收益率
+    计算n期后的对数收益率,注意这里的n应该取负数
     """
 
-    return (np.log(data / data.shift(n))-1/10000) * 100
+    return (np.log(data.shift(n) / data)) * 100
 
 
 @njit
-def calculate_exit_prices_long(open_prices, low_prices, trs, delta_t, min_thre):
+def calculate_exit_prices_long(open_prices, low_prices, trs, delta_t,
+                               min_thre):
     exit_prices = np.empty(len(open_prices))
 
     for i in range(len(open_prices)):
@@ -240,9 +252,9 @@ def long_liqka(data: pd.DataFrame, trs=0.03, delta_t=0.003, min_thre=0.5):
     """
     open_prices = data.open.values
     low_prices = data.low.values
-    exit_prices = calculate_exit_prices_long(
-        open_prices, low_prices, trs, delta_t, min_thre)
-    return (np.log(exit_prices/open_prices) - 1/10000)*100  # 1/10000是手续费
+    exit_prices = calculate_exit_prices_long(open_prices, low_prices, trs,
+                                             delta_t, min_thre)
+    return (np.log(exit_prices / open_prices) - 2 / 10000) * 100  # 2/10000是手续费
 
 
 @njit
@@ -289,6 +301,6 @@ def short_liqka(data: pd.DataFrame, trs=0.03, delta_t=0.003, min_thre=0.5):
     """
     open_prices = data.open.values
     high_prices = data.high.values
-    exit_prices = calculate_exit_prices(
-        open_prices, high_prices, trs, delta_t, min_thre)
-    return (np.log(open_prices / exit_prices) - 1/10000) * 100  # 1/10000是手续费
+    exit_prices = calculate_exit_prices(open_prices, high_prices, trs, delta_t,
+                                        min_thre)
+    return (np.log(open_prices / exit_prices) - 2 / 10000) * 100  # 1/10000是手续费

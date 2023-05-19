@@ -17,36 +17,21 @@ from vpny_qmlt.trader.template import (
 from vpny_qmlt.trader.utility import Interval
 
 
-def MACD(data, fast, slow, mid):
-    """
-    计算n期的MACD
-    dif =  短线EMA - 长线EMA
-    dea = EMA(diff, mid)   (diff的平滑移动平均线)
-    hist = (diff - dea)  (柱状图)
-    """
-    dif, dea, hist = ta.MACD(data,
-                             fastperiod=fast,
-                             slowperiod=slow,
-                             signalperiod=mid)
-    signal = (dif - dea) / dea
-    return dif, dea, hist, signal
-
-
 class TestDL(Signal):
-    def __init__(self, engine, signal_name, interval, windows, vt_symbols, setting):
-        super().__init__(engine, signal_name, interval,
-                         windows, vt_symbols, setting)
+    def __init__(self, engine, signal_name,  setting):
+        super().__init__(engine, signal_name,   setting)
 
         self.am = ArrayManager(size=(self.sample_size))
 
         self.open_intenses = []
+        self.tradingdate = None
 
         # args
 
     def on_init(self):
         self.log_info("信号初始化")
 
-        self.load_bar(days=300)
+        self.load_bar(days=30)
         self.subscribe_bar(
             self.vt_symbols, Interval.MINUTE, 1, self.on_1_bar)
 
@@ -59,12 +44,16 @@ class TestDL(Signal):
         if not self.am.inited:
             return
 
-        dif, dea, hist, signal = MACD(self.am.close, fast=10, slow=60, mid=15)
+        # if self.tradingdate != bar.trading_date:
+        #     self.tradingdate = bar.trading_date
+        #     self.log_info(f"new date {self.tradingdate}")
+        sma = ta.SMA(self.am.close, 5)
+        diff = (sma - self.am.close)/self.am.close*100
         rank = pd.qcut(
-            dea, q=self.bins, labels=False, duplicates="drop")[-1]
+            diff, q=self.bins, labels=False, duplicates="drop")[-1]
         # print(rank)
-        if rank == 29:
-            open_intense = 1
+        if rank == 1 or rank == 2 or rank == 0:
+            open_intense = -1
         self.update_intense(dt=bar.datetime, open_intense=open_intense)
 
     def on_1h_bar(self, bar: BarData):
@@ -77,12 +66,12 @@ class TestDL(Signal):
 
 
 class Test01(Template):
-    def __init__(self, engine, strategy_name: str, vt_symbols: list, setting: dict):
+    def __init__(self, engine, strategy_name: str, setting: dict):
         # 参数
-        super().__init__(engine, strategy_name, vt_symbols, setting)
+        super().__init__(engine, strategy_name, setting)
         setting.values()
         self.signal1: Signal = self.add_signal(
-            TestDL, "test", Interval.MINUTE, "self.min", self.vt_symbols, self.test)
+            TestDL, "test", self.vt_symbols, self.test)
 
         self.time_count = {}  # 记录订单编号及持仓时间
         self.local_ids = {}  # 记录订单编号
@@ -114,36 +103,103 @@ class Test01(Template):
         """
 
         # 当open_intense信号触发即以当前bar.close价格开单
+        long_signal = False
+        short_signal = False
+
+        long_pos = self.long_pos[bar.vt_symbol]
+        short_pos = self.short_pos[bar.vt_symbol]
+
+        # self.log_info(f"long_pos {long_pos}, short_pos {short_pos}")
 
         if self.inited():
+            # 没有仓位
+            # if self.pos > 5 or self.pos < -5:
+            #     raise Exception(self.pos)
             open_intense = self.get_open_intense()
             if open_intense > 0:
-                self.send_order(vt_symbol=bar.vt_symbol, direction=Direction.LONG,
-                                offset=Offset.OPEN, price=bar.close * 1.01,
-                                volume=1)
+                long_signal = True
+            elif open_intense < 0:
+                short_signal = True
+            if -1000000 <= self.pos <= 3000000:  # 限制持仓数量
+                if not self.get_at_risk():
+                    if open_intense > 0:
+                        long_signal = True
 
-            tcopy = self.time_count.copy()
-            for vt_orderid, timecount in tcopy.items():
-                timecount += 1
-                if timecount > 30 and vt_orderid in self.active_limit_orders:
-                    self.cancel_order(vt_orderid)  # 挂单超过30分钟,撤单
-                    self.cancle_count += 1
-                    if self.cancel_count % 10 == 0:
-                        print("cancel order count:{}".format(
-                            self.cancle_count))
-                    # print("cancel order:{}".format(vt_orderid))
-                elif timecount > self.shift_rtn:
-                    order: OrderData = self.get_order(vt_orderid)
-                    if not order:
-                        print("error")
+                    elif open_intense < 0:
+                        short_signal = True
+
+                    if not self.active_limit_orders:
+                        if (long_signal is True):
+                            self.send_order(vt_symbol=bar.vt_symbol, direction=Direction.LONG,
+                                            offset=Offset.OPEN, price=bar.close,
+                                            volume=1)
+                            # self.log_info(f'多开单,price:{bar.close}')
+                        elif (short_signal is True):
+                            self.send_order(vt_symbol=bar.vt_symbol, direction=Direction.SHORT,
+                                            offset=Offset.OPEN, price=bar.close,
+                                            volume=1)
+                            # self.log_info(f"多空单,price:{bar.close}")
+
                     else:
-                        local_id = self.send_order(
-                            order.vt_symbol, Direction.SHORT if order.direction is Direction.LONG else Direction.LONG, Offset.CLOSE, bar.close*0.99, order.traded)
+                        d1 = self.active_limit_orders.copy()
+                        for orderid, order in d1.items():
+                            if order.offset == Offset.OPEN:
+                                # 多开撤单
+                                if order.direction == Direction.LONG:
+                                    if bar.close - order.price > 5:
+                                        # self.log_info(
+                                        #     f'多开撤单,high:{bar.high} - price:{order.price} > 5')
+                                        self.cancel_order(orderid)
+                                        # 撤单后再开仓
+                                        # if long_signal:
+                                        #     self.send_order(vt_symbol=bar.vt_symbol, direction=Direction.LONG,
+                                        #                     offset=Offset.OPEN, price=bar.close * 1.01,
+                                        #                     volume=1)
+                                # 空开撤单
+                                else:
+                                    if order.price - bar.close > 5:
+                                        # self.log_info(
+                                        #     f'空开撤单,price:{order.price} - low:{bar.low} > 5')
+                                        self.cancel_order(orderid)
+                                        # 撤单后再开仓
+                                        # if short_signal:
+                                        #     self.send_order(vt_symbol=bar.vt_symbol, direction=Direction.SHORT,
+                                        #                     offset=Offset.OPEN, price=bar.close*0.99,
+                                        #                     volume=1)
 
-                        self.time_count.pop(vt_orderid)
-                        continue
+            # 有仓位,平仓逻辑
+            if long_pos or short_pos:
+                close_pos, D_KliqPoint = self.get_liqka_close_intense(
+                    bar.symbol)
+                # self.log_info(
+                #     f"close_pos{close_pos},{D_KliqPoint}, {self.long_pos},{self.short_pos}")
 
-                self.time_count[vt_orderid] = timecount
+                if close_pos > 0:
+                    # Long close
+                    self.send_order(vt_symbol=bar.vt_symbol, direction=Direction.LONG,
+                                    offset=Offset.CLOSE, price=int(
+                                        max(bar.open, D_KliqPoint)),
+                                    volume=close_pos)
+                elif close_pos < 0:
+                    self.send_order(vt_symbol=bar.vt_symbol, direction=Direction.SHORT,
+                                    offset=Offset.CLOSE, price=int(
+                                        min(bar.open, D_KliqPoint)),
+                                    volume=-close_pos)
+            else:
+                prc_tick = self.get_pricetick(bar.vt_symbol)
+                d1 = self.active_limit_orders.copy()
+                for orderid, order in d1.items():
+                    if (order.offset != Offset.OPEN):
+                        if order.direction == Direction.SHORT and order.price - bar.low > 5 * prc_tick:
+                            # self.log_info(
+                            #     f'空平撤单,price:{order.price} - low:{bar.low} > 5')
+                            self.reclose_price = bar.low - 2 * prc_tick
+                            self.cancel_order(orderid)
+                        elif order.direction == Direction.LONG and bar.high - order.price > 5 * prc_tick:
+                            # self.log_info(
+                            #     f'多平撤单,high:{bar.high} - price:{order.price} > 5')
+                            self.reclose_price = bar.high + 2 * prc_tick
+                            self.cancel_order(orderid)
 
     def on_cancel(self, order: OrderData):
         """
@@ -155,10 +211,13 @@ class Test01(Template):
         """
         Callback of new order data update.
         """
-        if order.vt_orderid not in self.time_count and order.offset == Offset.OPEN:
-            self.time_count[order.vt_orderid] = 0
+        # if order.offset == Offset.CLOSE:
+        #     self.log_info(f"close order {order.direction }")
+        pass
 
     def on_trade(self, trade: TradeData):
         """
         Callback of new trade data update.
         """
+        # self.log_info(f"on_trade,{trade.offset}")
+        ...
