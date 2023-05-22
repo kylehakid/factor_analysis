@@ -42,7 +42,10 @@ class FactorRanker():
         对因子进行预处理
         """
         self.factors = self.factors.dropna()
-
+        
+        # 外部set_index时会改变index数据类型
+        if self.factors.index.name == "datetime":
+            self.factors.index = pd.to_datetime(self.factors.index)
         if type(self.factors.index) != pd.core.indexes.datetimes.DatetimeIndex:
             self.factors.set_index("datetime", inplace=True, drop=True)
         if type(self.factors.index) != pd.core.indexes.datetimes.DatetimeIndex:
@@ -128,6 +131,10 @@ class FactorRanker():
             periods = list(range(1, 31)) + list(range(30, 201, 10)) + [300, 400, 500]
 
         prices = self.prices
+
+        # 外部set_index时会改变index数据类型
+        if prices.index.name == "datetime":
+            prices.index = pd.to_datetime(prices.index)
         if type(prices.index) != pd.core.indexes.datetimes.DatetimeIndex:
             raise Exception("prices的index应设为\"DatetimeIndex\",以便于对齐factors")
 
