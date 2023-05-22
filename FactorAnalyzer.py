@@ -72,7 +72,7 @@ class FactorRanker():
     def _cal_rank_parallel(column, factors, bins, sample_size, len_data):
         _ranks = [None for i in range(len_data)]
         if len_data < sample_size:
-            raise "数据量小于sample_size"
+            raise Exception(f"数据量({len_data})小于sample_size({sample_size})")
         for i in range(sample_size, len_data):
             _rank = pd.qcut(factors[column].iloc[i + 1 - sample_size:i + 1],
                             q=bins,
@@ -106,32 +106,29 @@ class FactorRanker():
         new_cols = {}
         for column, _ranks in rank_list:
             new_cols[f"{column}_rank"] = _ranks
+        new_cols["datetime"] = data.index
+        new_cols = pd.DataFrame(new_cols).set_index("datetime", drop=True)
 
-        new_data = pd.DataFrame(new_cols).set_index()
         # 使用pd.concat一次性添加所有的列
-        data = pd.concat([data, pd.DataFrame(new_cols)], axis=1)
-
+        data = pd.concat([data, new_cols], axis=1)
+        # data.set_index("datetime", drop=True,inplace=True)
         data.dropna(inplace=True)
         return data
 
     def _cal_returns(self,
-                     prices: pd.Series,
                      periods=None):
 
         if periods is None:
-            periods = list(range(1, 31)) + \
-                      list(range(30, 201, 10))
-        if periods is None:
             periods = list(range(1, 31)) + list(range(30, 201, 10)) + [300, 400, 500]
-
         prices = self.prices
         if type(prices.index) != pd.core.indexes.datetimes.DatetimeIndex:
             raise Exception("prices的index应设为\"DatetimeIndex\",以便于对齐factors")
 
         rtn = pd.DataFrame()
         for i in periods:
-            rtn["future_{}_rtn(%)".format(i)] = np.log(
-                prices.shift(-i) / prices) * 100
+            # rtn["future_{}_rtn(%)".format(i)] = np.log(
+            #     prices.shift(-i) / prices) * 100
+            rtn["future_{}_rtn(%)".format(i)] = ((prices.shift(-i) - prices) / prices) * 100
         # rtn["price"] = prices
         return rtn
 
@@ -164,7 +161,7 @@ class FactorRanker():
                       list(range(30, 201, 5)) + [300, 400, 500]
         if not self.data_processd:
             self._preprocess_data()
-        returns = self._cal_returns(self.prices, periods)
+        returns = self._cal_returns(periods)
 
         if save is True:
             returns.to_parquet(
@@ -187,7 +184,6 @@ class FactorRanker():
                                     sample_size=sample_size,
                                     save=False)
         returns = self.cal_returns(symbol, periods, save=False)
-        print(rank_df,returns)
         result_df = pd.concat([rank_df, returns], axis=1, join="inner")
         result_df.dropna(inplace=True)
         if save:
@@ -248,8 +244,8 @@ def _cal_effective_period_acf(rank_df,
                               select_df,
                               sort_by="mean_rtn",
                               top_n=30,
-                              window=20,
-                              threshold=0.5):
+                              window=10,
+                              threshold=0.1):
     """
     summary:
     计算因子有效期, 以自相关系数小于threshold为有效期结束
@@ -261,15 +257,15 @@ def _cal_effective_period_acf(rank_df,
     """
     select_df.assign(effective_period=None)
     if top_n > len(select_df):
-        raise ("top_n 大于 select_df的长度")
+        raise Exception("top_n 大于 select_df的长度")
     if window > len(rank_df):
-        raise ("window 大于 rank_df的长度")
+        raise Exception("window 大于 rank_df的长度")
     if threshold > 1:
-        raise ("threshold 大于 1")
+        raise Exception("threshold 大于 1")
     if threshold < 0:
-        raise ("threshold 小于 0")
+        raise Exception("threshold 小于 0")
     if sort_by not in select_df.columns:
-        raise (
+        raise Exception(
             "sort_by 不在 select_df的列中, 请在[\"mean_rtn\", \"win_rate\"]中选择")
     if top_n == "all":
         select_idx = select_df.index
@@ -280,7 +276,6 @@ def _cal_effective_period_acf(rank_df,
     for fac, rank, rtn in select_idx:
         cols = ["{}".format(fac), rtn]
         query_df = rank_df[cols].query("{}== {} ".format(fac, rank))
-        rolling_mean = query_df[rtn]
         rolling_mean = query_df[rtn].rolling(window=window).mean()
         # 计算自相关系数
         lag = 3000
@@ -304,16 +299,21 @@ class RankFactorAnalyzer:
     2.根据因子的rank, 计算每份因子对应收益率的mean, win_rate
     """
 
-    def __init__(self, rank_factors, returns):
+    def __init__(self, rank_factors: pd.DataFrame, returns: pd.DataFrame):
+        if not isinstance(rank_factors, pd.DataFrame) or not isinstance(returns, pd.DataFrame):
+            raise TypeError("rank_factors and returns should be pandas DataFrame")
+        if not isinstance(rank_factors.index, pd.core.indexes.datetimes.DatetimeIndex):
+            raise Exception("rank_factors的index应设为\"DatetimeIndex\"")
+        if not isinstance(returns.index, pd.core.indexes.datetimes.DatetimeIndex):
+            raise Exception("returns的index应设为\"DatetimeIndex\"")
+
         self.rank_factors = rank_factors
         self.returns = returns
         self.cal_results = False
         self.cal_select_results = False
-        if type(self.rank_factors.index
-                ) != pd.core.indexes.datetimes.DatetimeIndex:
-            raise Exception("rank_factors的index应设为\"DatetimeIndex\"")
-        if type(self.returns.index) != pd.core.indexes.datetimes.DatetimeIndex:
-            raise Exception("returns的index应设为\"DatetimeIndex\"")
+        self.select_long = pd.DataFrame()
+        self.select_short = pd.DataFrame()
+
         self.data = pd.concat([rank_factors, returns], axis=1,
                               join="inner").dropna()
 
@@ -331,18 +331,12 @@ class RankFactorAnalyzer:
         rtn_cols = [rtn for rtn in rtn.columns if "rtn" in rtn]
 
         data_df = self.data.copy()
-
         results_df = pd.DataFrame()
 
         for i in factors_cols:
-            count_df = data_df.groupby(i)["open"].count().rename("counts")
-
+            count_df = data_df.groupby(i)[i].count().rename("counts")
             mean_rtn = data_df.groupby(i)[rtn_cols].mean()
-
-            win_rate = data_df.groupby(i)[[
-                rtn for rtn in rtn_cols
-            ]].apply(lambda x: (x > 0).mean() * 100)
-
+            win_rate = data_df.groupby(i)[rtn_cols].apply(lambda x: (x > 0).mean() * 100)
             result = pd.merge(mean_rtn,
                               win_rate,
                               on=i,
@@ -352,6 +346,7 @@ class RankFactorAnalyzer:
                                                             on=i,
                                                             how="outer")
 
+
             result.index = pd.MultiIndex.from_product([[i], result.index],
                                                       names=["factor", "rank"])
             results_df = pd.concat([results_df, result], axis=0)
@@ -359,6 +354,7 @@ class RankFactorAnalyzer:
         if save is True:
             results_df.to_parquet(
                 f".//data//{symbol}_{sample_size}_{bins}_results_df.parquet")
+
         self.cal_results = True
         self.results_df = results_df
 
@@ -370,8 +366,9 @@ class RankFactorAnalyzer:
                        count=None,
                        sort_by="mean_rtn",
                        top_n=30,
-                       threshold=0.5,
-                       window=20):
+                       threshold=0.1,
+                       window=1,
+                       results_df=None, ) -> tuple:
         """
         根据条件选择因子:\n
         1.胜率大于win_rate且收益率大于rtn的因子;\n
@@ -385,16 +382,33 @@ class RankFactorAnalyzer:
         top_n: 根据sorted选择的排序方式, 选择top_n个因子进行有效期计算, 如果要算全部的因子有效期,则设置为"all";\n
         threshold: 计算因子有效期的自相关系数最低值, 当低于这个值时认定有效期结束;\n
         window: 计算因子有效期的滚动平均周期;
+        results_df: pd.DataFrame,因子rank对应收益率的mean, win_rate,effective_period;
         """
+        if not 0 <= win_rate <= 100:
+            raise Exception("win_rate应在0到100之间")
+        if not isinstance(rtn, (int, float)):
+            raise Exception("rtn应在-1到1之间")
+        if count is not None and not isinstance(count, int):
+            raise Exception("count应为整数类型")
+        if sort_by not in ["mean_rtn", "win_rate"]:
+            raise Exception("sort_by应为\"mean_rtn\"或\"win_rate\"")
+        if not isinstance(top_n, int) or top_n <= 0:
+            raise Exception("top_n应为正整数")
+        if not 0 <= threshold <= 1:
+            raise Exception("threshold应在0到1之间")
+        if not isinstance(window, int) or window <= 0:
+            raise Exception("window应为正整数")
+
         df_idx = []
         mean_s = pd.Series(dtype=float)
         win_rate_s = pd.Series(dtype=float)
         count_s = pd.Series(dtype=int)
         effective_period_s = pd.Series(dtype=int)
-        if self.cal_results is False:
+        if self.cal_results is False and results_df is None:
             results_df = self.cal_rank_results()
-        else:
+        elif self.cal_results is True and results_df is None:
             results_df = self.results_df
+
         for col_name in results_df.columns:
 
             # 创建一个新的Series，其中包含该列的数据，其索引为三层MultiIndex
@@ -434,7 +448,7 @@ class RankFactorAnalyzer:
                                                 top_n=top_n,
                                                 window=window,
                                                 threshold=threshold)
-        select_short = select_long.copy()
+        select_short = df.copy()
         select_short["mean_rtn"] = -select_short["mean_rtn"]
         select_short["win_rate"] = 100 - select_short["win_rate"]
         select_short = select_short.sort_values(by=sort_by, ascending=False)
@@ -470,6 +484,9 @@ class RankFactorAnalyzer:
         """
         print("画出前{}个因子的图".format(n))
         data_df = self.data
+        win_rate = 0
+        rtn = -1
+        count = None
         for k, v in selected_args.items():
             if k == "win_rate":
                 win_rate = v
@@ -483,10 +500,12 @@ class RankFactorAnalyzer:
             results_df = self.results_df
 
         if self.cal_select_results is False:
-            select_long, select_short = self.factors_select(results_df,
-                                                            win_rate=win_rate,
+            select_long, select_short = self.factors_select(win_rate=win_rate,
                                                             rtn=rtn,
-                                                            count=count)
+                                                            count=count,
+                                                            sort_by=sort_by,
+                                                            results_df=results_df
+                                                            )
         else:
             select_long = self.select_long
             select_short = self.select_short
@@ -497,17 +516,20 @@ class RankFactorAnalyzer:
         rank = select_long.index.get_level_values(1)
         rtn = select_long.index.get_level_values(2)
 
+
         print("long factor:")
         for i in range(n):
-            log_rtn = data_df[rtn[i]][data_df[factor[i]] == rank[i]]
-            log_rtn = log_rtn.cumsum()
+            # log_rtn = data_df[rtn[i]][data_df[factor[i]] == rank[i]]
+            # log_rtn = log_rtn.cumsum()
+            rtns = data_df[rtn[i]][data_df[factor[i]] == rank[i]]
+            cum_rtn = rtns.cumsum()
             if show_dt is False:
-                log_rtn.reset_index(inplace=True, drop=True)
+                cum_rtn.reset_index(inplace=True, drop=True)
             fig, ax = plt.subplots(figsize=(10, 4))
-            ax.plot(log_rtn)
+            ax.plot(cum_rtn)
             ax.set_ylabel("cumsum", fontsize=16)
             ax.set_title(
-                f"{factor[i]}_{rank[i]} :{log_rtn.name}    win_rate:{round(w[i], 2)}  mean_rtn:{round(r[i], 3)}",
+                f"{factor[i]}_{rank[i]} :{cum_rtn.name}    win_rate:{round(w[i], 2)}  mean_rtn:{round(r[i], 3)}",
                 fontsize=22)
             plt.show()
 
@@ -516,26 +538,35 @@ class RankFactorAnalyzer:
         factor = select_short.index.get_level_values(0)
         rank = select_short.index.get_level_values(1)
         rtn = select_short.index.get_level_values(2)
+
         print("short factor:")
         for i in range(n):
-            log_rtn = -data_df[rtn[i]][data_df[factor[i]] == rank[i]]
-            log_rtn = log_rtn.cumsum()
+            # log_rtn = -data_df[rtn[i]][data_df[factor[i]] == rank[i]]
+            # log_rtn = log_rtn.cumsum()
+            rtns = -data_df[rtn[i]][data_df[factor[i]] == rank[i]]
+            cum_rtn = rtns.cumsum()
             if show_dt is False:
-                log_rtn.reset_index(inplace=True, drop=True)
+                cum_rtn.reset_index(inplace=True, drop=True)
             fig, ax = plt.subplots(figsize=(10, 4))
-            ax.plot(log_rtn)
+            ax.plot(cum_rtn)
             ax.set_ylabel("cumsum", fontsize=16)
             ax.set_title(
-                f"{factor[i]}_{rank[i]} :{log_rtn.name}    win_rate:{round(w[i], 2)}  mean_rtn:{round(r[i], 3)}",
+                f"{factor[i]}_{rank[i]} :{cum_rtn.name}    win_rate:{round(w[i], 2)}  mean_rtn:{round(r[i], 3)}",
                 fontsize=22)
             plt.show()
 
-run = True
+
+run = False
 if __name__ == "__main__":
+    from multiprocessing import freeze_support
+
+    freeze_support()  # 在windows下使用多进程需要加上这句话, 否则会报错
+    print("start")
     original_factors = ["ic99_orignal_factors.parquet", "rb99_orignal_factors.parquet"]
+    run = True
     if run:
         for symbol in original_factors:
-            data = pd.read_parquet(".//data//" + symbol)
+            data = pd.read_parquet(".//data//" + symbol).dropna()[:10000]
             data = data.dropna()
             data.set_index("datetime", inplace=True, drop=True)
             data = data.drop(["symbol", "trading_date"], axis=1)
@@ -546,3 +577,4 @@ if __name__ == "__main__":
             fa_test.cal_factors_and_rtns(symbol[:4], bins=30, sample_size=10000, save=True)
             fa_test.cal_factors_and_rtns(symbol[:4], bins=30, sample_size=20000, save=True)
             fa_test.cal_factors_and_rtns(symbol[:4], bins=30, sample_size=30000, save=True)
+    print("end")
