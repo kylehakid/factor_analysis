@@ -106,10 +106,13 @@ class FactorRanker():
         new_cols = {}
         for column, _ranks in rank_list:
             new_cols[f"{column}_rank"] = _ranks
-
-        new_data = pd.DataFrame(new_cols).set_index()
+        # problem
+        new_ = pd.DataFrame(new_cols)
+        new_.index = data.index
+        print()
+        print('rank:',len(new_),'origin:', len(data))
         # 使用pd.concat一次性添加所有的列
-        data = pd.concat([data, pd.DataFrame(new_cols)], axis=1)
+        data = pd.concat([data, new_], axis=1)
 
         data.dropna(inplace=True)
         return data
@@ -335,7 +338,8 @@ class RankFactorAnalyzer:
         results_df = pd.DataFrame()
 
         for i in factors_cols:
-            count_df = data_df.groupby(i)["open"].count().rename("counts")
+            # problem
+            count_df = data_df.groupby(i)[i].count().rename("counts")
 
             mean_rtn = data_df.groupby(i)[rtn_cols].mean()
 
@@ -434,9 +438,12 @@ class RankFactorAnalyzer:
                                                 top_n=top_n,
                                                 window=window,
                                                 threshold=threshold)
-        select_short = select_long.copy()
-        select_short["mean_rtn"] = -select_short["mean_rtn"]
-        select_short["win_rate"] = 100 - select_short["win_rate"]
+        # problem
+        df_short = df.copy()
+        df_short["mean_rtn"] = -df_short["mean_rtn"]
+        df_short['win_rate'] = 100 - df_short['win_rate']
+        select_short = df_short[(df_short["mean_rtn"] > rtn) & df_short["win_rate"] > win_rate &
+                                (df_short["count"] > count)]
         select_short = select_short.sort_values(by=sort_by, ascending=False)
         select_short = _cal_effective_period_acf(self.data,
                                                  select_short,
