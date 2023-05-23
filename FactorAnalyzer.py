@@ -107,29 +107,30 @@ class FactorRanker():
         for column, _ranks in rank_list:
             new_cols[f"{column}_rank"] = _ranks
         new_cols["datetime"] = data.index
-        new_cols = pd.DataFrame(new_cols).set_index("datetime", drop=True)
+        new_cols = pd.DataFrame(new_cols, index=data.index)
 
         # 使用pd.concat一次性添加所有的列
-        data = pd.concat([data, new_cols], axis=1)
+        data = pd.concat([data, new_cols], axis=1, join="inner")
         # data.set_index("datetime", drop=True,inplace=True)
         data.dropna(inplace=True)
         return data
 
     def _cal_returns(self,
                      periods=None):
-
-        if periods is None:
-            periods = list(range(1, 31)) + list(range(30, 201, 10)) + [300, 400, 500]
         prices = self.prices
         if type(prices.index) != pd.core.indexes.datetimes.DatetimeIndex:
             raise Exception("prices的index应设为\"DatetimeIndex\",以便于对齐factors")
-
-        rtn = pd.DataFrame()
+        _rtn_dict = {}
         for i in periods:
-            # rtn["future_{}_rtn(%)".format(i)] = np.log(
-            #     prices.shift(-i) / prices) * 100
-            rtn["future_{}_rtn(%)".format(i)] = ((prices.shift(-i) - prices) / prices) * 100
-        # rtn["price"] = prices
+            future_rtn = ((prices.shift(-i) - prices) / prices) * 100
+            future_exit_dt = prices.index.to_series().shift(-i)
+
+            # 把计算出的数据存到字典中
+            _rtn_dict["future_{}_rtn(%)".format(i)] = future_rtn
+            _rtn_dict["future_{}_exit_dt".format(i)] = future_exit_dt
+
+        # 一次性创建 DataFrame，并保留原有的index
+        rtn = pd.DataFrame(_rtn_dict, index=prices.index)
         return rtn
 
     def rank_factors(self,
@@ -158,7 +159,7 @@ class FactorRanker():
         """
         if periods is None:
             periods = list(range(1, 31)) + \
-                      list(range(30, 201, 5)) + [300, 400, 500]
+                      list(range(31, 201, 5)) + [300, 400, 500]
         if not self.data_processd:
             self._preprocess_data()
         returns = self._cal_returns(periods)
@@ -175,7 +176,6 @@ class FactorRanker():
                              sample_size: int = 3000,
                              periods=None,
                              save=False):
-
         if periods is None:
             periods = list(range(1, 31)) + \
                       list(range(30, 201, 5)) + [300, 400, 500]
@@ -197,7 +197,7 @@ def _cal_effective_period_mean(rank_df,
                                select_df,
                                sort_by="mean_rtn",
                                top_n=30,
-                               window=20):
+                               window=10):
     """
         summary:
         计算因子有效期, 其后滚动收益率低于因子收益率均值的次数
@@ -295,7 +295,7 @@ def _cal_effective_period_acf(rank_df,
 
 class RankFactorAnalyzer:
     """
-    1.把因子分成n份,循环计算 该因子与之前sample_siez期因子值中, 该因子的rank
+    1.把因子分成n份,循环计算该因子与之前sample_siez期因子值中该因子的rank
     2.根据因子的rank, 计算每份因子对应收益率的mean, win_rate
     """
 
@@ -307,36 +307,63 @@ class RankFactorAnalyzer:
         if not isinstance(returns.index, pd.core.indexes.datetimes.DatetimeIndex):
             raise Exception("returns的index应设为\"DatetimeIndex\"")
 
-        self.rank_factors = rank_factors
-        self.returns = returns
         self.cal_results = False
         self.cal_select_results = False
         self.select_long = pd.DataFrame()
         self.select_short = pd.DataFrame()
-
-        self.data = pd.concat([rank_factors, returns], axis=1,
-                              join="inner").dropna()
+        rtn_cols = [rtn for rtn in returns.columns if "rtn" in rtn]
+        exit_cols = [rtn for rtn in returns.columns if "exit" in rtn]
+        if len(rtn_cols) != len(exit_cols):
+            raise Exception("returns中收益率和出场时间不匹配")
+        # 确保数据对齐
+        self.data: pd.DataFrame = pd.concat([rank_factors, returns], axis=1,
+                                            join="inner").dropna()
+        self.rank_factors = self.data[[rank for rank in self.data.columns if "rank" in rank]]
+        self.returns = self.data[[rtn for rtn in self.data.columns if "rtn" in rtn or "exit" in rtn]]
 
     def cal_rank_results(
             self,
+            factors_df: pd.DataFrame = None,
+            rtn_df: pd.DataFrame = None,
             save=False,
             symbol: str = None,
             bins: int = None,
             sample_size: int = None,
     ) -> pd.DataFrame:
+        if factors_df is None:
+            factors = self.rank_factors
+        else:
+            factors = factors_df
+        if rtn_df is None:
+            rtn = self.returns
+        else:
+            rtn = rtn_df
+        if not isinstance(factors, pd.DataFrame) or not isinstance(rtn, pd.DataFrame):
+            raise TypeError("rank_factors and returns should be pandas DataFrame")
+        if not isinstance(factors.index, pd.core.indexes.datetimes.DatetimeIndex):
+            raise Exception("rank_factors的index应设为\"DatetimeIndex\"")
+        if save:
+            if symbol is None:
+                raise Exception("symbol is None")
+            if bins is None:
+                raise Exception("bins is None")
+            if sample_size is None:
+                raise Exception("sample_size is None")
 
-        factors = self.rank_factors
-        rtn = self.returns
         factors_cols = [col for col in factors.columns if "rank" in col]
         rtn_cols = [rtn for rtn in rtn.columns if "rtn" in rtn]
 
-        data_df = self.data.copy()
+        data_df: pd.DataFrame = pd.concat([factors, rtn], axis=1,
+                                          join="outer")
         results_df = pd.DataFrame()
 
         for i in factors_cols:
+            # 计算每个分组的收益率均值, 胜率, 样本数, 如果数据有nan, 则忽略nan
+            na_count = data_df.groupby(i)[rtn_cols].apply(lambda x: x.isnull().sum())
+            not_na_count = data_df.groupby(i)[rtn_cols].count() - na_count
+            mean_rtn = data_df.groupby(i)[rtn_cols].sum() / not_na_count
+            win_rate = data_df.groupby(i)[rtn_cols].apply(lambda x: (x > 0).sum() * 100) / not_na_count
             count_df = data_df.groupby(i)[i].count().rename("counts")
-            mean_rtn = data_df.groupby(i)[rtn_cols].mean()
-            win_rate = data_df.groupby(i)[rtn_cols].apply(lambda x: (x > 0).mean() * 100)
             result = pd.merge(mean_rtn,
                               win_rate,
                               on=i,
@@ -345,7 +372,6 @@ class RankFactorAnalyzer:
                                         "_win_rate")).merge(count_df,
                                                             on=i,
                                                             how="outer")
-
 
             result.index = pd.MultiIndex.from_product([[i], result.index],
                                                       names=["factor", "rank"])
@@ -367,8 +393,11 @@ class RankFactorAnalyzer:
                        sort_by="mean_rtn",
                        top_n=30,
                        threshold=0.1,
-                       window=1,
-                       results_df=None, ) -> tuple:
+                       window=5,
+                       factors_df: pd.DataFrame = None,
+                       rtn_df: pd.DataFrame = None,
+                       results_df=None,
+                       show_result=True) -> tuple:
         """
         根据条件选择因子:\n
         1.胜率大于win_rate且收益率大于rtn的因子;\n
@@ -398,6 +427,10 @@ class RankFactorAnalyzer:
             raise Exception("threshold应在0到1之间")
         if not isinstance(window, int) or window <= 0:
             raise Exception("window应为正整数")
+        if factors_df is None:
+            factors_df = self.rank_factors
+        if rtn_df is None:
+            rtn_df = self.returns
 
         df_idx = []
         mean_s = pd.Series(dtype=float)
@@ -405,12 +438,11 @@ class RankFactorAnalyzer:
         count_s = pd.Series(dtype=int)
         effective_period_s = pd.Series(dtype=int)
         if self.cal_results is False and results_df is None:
-            results_df = self.cal_rank_results()
+            results_df = self.cal_rank_results(factors_df, rtn_df, save=False)
         elif self.cal_results is True and results_df is None:
             results_df = self.results_df
 
         for col_name in results_df.columns:
-
             # 创建一个新的Series，其中包含该列的数据，其索引为三层MultiIndex
             if "mean" in col_name:
                 _df_idx = [(idx[0], idx[1], col_name[:-5])
@@ -462,11 +494,83 @@ class RankFactorAnalyzer:
         self.cal_select_results = True
         self.select_long = select_long
         self.select_short = select_short
-        print("long factor:")
-        display(select_long)
-        print("short factor:")
-        display(select_short)
+        if show_result:
+            print("long factor:")
+            display(select_long)
+            print("short factor:")
+            display(select_short)
         return select_long, select_short
+
+    def factors_select_daily(self,
+                             rolling_days: int = 5,
+                             sort_by: str = "mean_rtn",
+                             top_n=5,
+                             save=False,
+                             symbol=None):
+        """
+        每日选出因子
+        :param rolling_days: 根据过去rolling_days天的数据选出因子
+        :param sort_by: 根据何种指标选择因子，'mean_rtn'或者'win_rate'
+        :param top_n: 选择前top_n个因子
+        :return: pd.DataFrame,每日选出的因子
+        """
+        self.cal_results = False
+        if rolling_days <= 0 or top_n <= 0:
+            raise Exception("rolling_days 和 top_n 都应为正整数")
+
+        if sort_by not in ["mean_rtn", "win_rate"]:
+            raise Exception("sort_by应为\"mean_rtn\"或\"win_rate\"")
+        if save:
+            if symbol is None:
+                raise Exception("symbol不能为空")
+
+        factors_daily_long = {}
+        factors_daily_short = {}
+        _temp_rtn = {}
+        rolling_days = 20
+        date = np.unique(self.returns.index.date)
+        date = np.sort(date)
+        rtn_cols = [col for col in self.returns.columns if "rtn" in col]
+        for day in range(len(date) - rolling_days):
+            for col in rtn_cols:
+                start = date[day]
+                if day + rolling_days < len(date):
+                    end = date[day + rolling_days]
+                    _now = end + pd.Timedelta(days=1)  # 选出因子的日期是可用数据的第二天
+                else:
+                    raise Exception("error")
+                    break
+                exit_dt: str = col[:-6] + "exit_dt"
+                _temp_rtn[col] = self.returns[col][
+                    (start <= self.returns[exit_dt].dt.date) & (self.returns[exit_dt].dt.date <= end)]
+            _temp_rtns = pd.DataFrame(_temp_rtn)
+            _temp_factors = self.rank_factors[
+                (start <= self.data[exit_dt].dt.date) & (self.data[exit_dt].dt.date <= end)]
+            _select_long, _select_short = self.factors_select(
+                factors_df=_temp_factors,
+                rtn_df=_temp_rtns,
+                sort_by=sort_by,
+                top_n=top_n,
+                show_result=False)
+            _select_long = _select_long[:top_n]
+            _select_short = _select_short[:top_n]
+            factors_daily_long[_now] = _select_long
+            factors_daily_short[_now] = _select_short
+
+        factors_daily_short = pd.concat(factors_daily_short, names=["date"])
+        factors_daily_long = pd.concat(factors_daily_long, names=["date"])
+
+        print("long factor:")
+        display(factors_daily_long)
+        print("short factor:")
+        display(factors_daily_short)
+        if save:
+            factors_daily_long.to_parquet(f".//data//{symbol}_daily_select_factors.parquet")
+            factors_daily_short.to_parquet(f".//data//{symbol}_daily_select_factors.parquet")
+            print(f"long factors saved to .//data//{symbol}_daily_select_factors.parquet")
+
+        self.cal_results = False
+        return factors_daily_long, factors_daily_short
 
     def plots(
             self,
@@ -516,7 +620,6 @@ class RankFactorAnalyzer:
         rank = select_long.index.get_level_values(1)
         rtn = select_long.index.get_level_values(2)
 
-
         print("long factor:")
         for i in range(n):
             # log_rtn = data_df[rtn[i]][data_df[factor[i]] == rank[i]]
@@ -554,27 +657,3 @@ class RankFactorAnalyzer:
                 f"{factor[i]}_{rank[i]} :{cum_rtn.name}    win_rate:{round(w[i], 2)}  mean_rtn:{round(r[i], 3)}",
                 fontsize=22)
             plt.show()
-
-
-run = False
-if __name__ == "__main__":
-    from multiprocessing import freeze_support
-
-    freeze_support()  # 在windows下使用多进程需要加上这句话, 否则会报错
-    print("start")
-    original_factors = ["ic99_orignal_factors.parquet", "rb99_orignal_factors.parquet"]
-    run = True
-    if run:
-        for symbol in original_factors:
-            data = pd.read_parquet(".//data//" + symbol).dropna()[:10000]
-            data = data.dropna()
-            data.set_index("datetime", inplace=True, drop=True)
-            data = data.drop(["symbol", "trading_date"], axis=1)
-            prices = data["close"]
-            fa_test = FactorRanker(data, prices)
-            fa_test.cal_factors_and_rtns(symbol[:4], bins=20, sample_size=2000, save=True)
-            fa_test.cal_factors_and_rtns(symbol[:4], bins=20, sample_size=5000, save=True)
-            fa_test.cal_factors_and_rtns(symbol[:4], bins=30, sample_size=10000, save=True)
-            fa_test.cal_factors_and_rtns(symbol[:4], bins=30, sample_size=20000, save=True)
-            fa_test.cal_factors_and_rtns(symbol[:4], bins=30, sample_size=30000, save=True)
-    print("end")
