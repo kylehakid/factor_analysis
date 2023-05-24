@@ -106,7 +106,7 @@ class FactorRanker():
         new_cols = {}
         for column, _ranks in rank_list:
             new_cols[f"{column}_rank"] = _ranks
-        new_cols["datetime"] = data.index
+
         new_cols = pd.DataFrame(new_cols, index=data.index)
 
         # 使用pd.concat一次性添加所有的列
@@ -483,6 +483,9 @@ class RankFactorAnalyzer:
         select_short = df.copy()
         select_short["mean_rtn"] = -select_short["mean_rtn"]
         select_short["win_rate"] = 100 - select_short["win_rate"]
+        select_short = select_short[(select_short["mean_rtn"] > rtn) &
+                                    (select_short["win_rate"] > win_rate) &
+                                    (select_short["count"] > count)]
         select_short = select_short.sort_values(by=sort_by, ascending=False)
         select_short = _cal_effective_period_acf(self.data,
                                                  select_short,
@@ -556,7 +559,7 @@ class RankFactorAnalyzer:
             _select_short = _select_short[:top_n]
             factors_daily_long[_now] = _select_long
             factors_daily_short[_now] = _select_short
-
+            self.cal_results = False
         factors_daily_short = pd.concat(factors_daily_short, names=["date"])
         factors_daily_long = pd.concat(factors_daily_long, names=["date"])
 
@@ -569,7 +572,7 @@ class RankFactorAnalyzer:
             factors_daily_short.to_parquet(f".//data//{symbol}_daily_select_factors.parquet")
             print(f"long factors saved to .//data//{symbol}_daily_select_factors.parquet")
 
-        self.cal_results = False
+        
         return factors_daily_long, factors_daily_short
 
     def plots(
