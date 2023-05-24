@@ -106,7 +106,6 @@ class FactorRanker():
         new_cols = {}
         for column, _ranks in rank_list:
             new_cols[f"{column}_rank"] = _ranks
-        new_cols["datetime"] = data.index
         new_cols = pd.DataFrame(new_cols, index=data.index)
 
         # 使用pd.concat一次性添加所有的列
@@ -514,7 +513,6 @@ class RankFactorAnalyzer:
         :param top_n: 选择前top_n个因子
         :return: pd.DataFrame,每日选出的因子
         """
-        self.cal_results = False
         if rolling_days <= 0 or top_n <= 0:
             raise Exception("rolling_days 和 top_n 都应为正整数")
 
@@ -536,7 +534,10 @@ class RankFactorAnalyzer:
                 start = date[day]
                 if day + rolling_days < len(date):
                     end = date[day + rolling_days]
-                    _now = end + pd.Timedelta(days=1)  # 选出因子的日期是可用数据的第二天
+                    if (day + rolling_days + 1) < len(date):
+                        _now = date[day + rolling_days + 1]  # 选出因子的日期是可用数据的第二天
+                    else:
+                        _now = date[day + rolling_days] + pd.Timedelta(days=1)
                 else:
                     raise Exception("error")
                     break
@@ -546,6 +547,8 @@ class RankFactorAnalyzer:
             _temp_rtns = pd.DataFrame(_temp_rtn)
             _temp_factors = self.rank_factors[
                 (start <= self.data[exit_dt].dt.date) & (self.data[exit_dt].dt.date <= end)]
+
+            self.cal_results = False
             _select_long, _select_short = self.factors_select(
                 factors_df=_temp_factors,
                 rtn_df=_temp_rtns,
@@ -565,8 +568,8 @@ class RankFactorAnalyzer:
         print("short factor:")
         display(factors_daily_short)
         if save:
-            factors_daily_long.to_parquet(f".//data//{symbol}_daily_select_factors.parquet")
-            factors_daily_short.to_parquet(f".//data//{symbol}_daily_select_factors.parquet")
+            factors_daily_long.to_parquet(f".//data//{symbol}_daily_select_long_factors.parquet")
+            factors_daily_short.to_parquet(f".//data//{symbol}_daily_select_short_factors.parquet")
             print(f"long factors saved to .//data//{symbol}_daily_select_factors.parquet")
 
         self.cal_results = False
