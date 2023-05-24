@@ -106,7 +106,6 @@ class FactorRanker():
         new_cols = {}
         for column, _ranks in rank_list:
             new_cols[f"{column}_rank"] = _ranks
-        new_cols["datetime"] = data.index
         new_cols = pd.DataFrame(new_cols).set_index("datetime", drop=True)
 
         # 使用pd.concat一次性添加所有的列
