@@ -291,6 +291,279 @@ def _cal_effective_period_acf(rank_df,
 
     return select_df
 
+import re
+import pyfolio as pf
+import base64
+import io
+from IPython.display import display, HTML
+
+def get_select_returns(data_df,select_df,tax = 0,select_period = 1):
+    '''
+    summary:
+        根据select_df计算一段时间的long或short的returns
+    parameter:
+        data_df: 因子和收益数据(收益都乘以了100)
+        select_df: 因子选择结果
+        select_period: 选择周期(为了对齐格式，无用)
+    return:
+        select_returns: 选出的因子的收益
+    '''
+    # 收益乘了100，所以税率也要乘100，得到最终结果后在除以100
+    tax *= 100
+
+    select_idx = select_df.index
+    select_data = pd.DataFrame()
+    # 选出每个因子select_rank下的rtn  
+    columns_name = []
+    for fac,rank,rtn in select_idx:
+        select_= data_df[data_df[fac] == rank][rtn] - tax
+        time_ = re.findall(r'\d+',rtn)[-1]
+        select_.index = data_df[data_df[fac] == rank][f'future_{time_}_exit_dt']
+        select_.index = pd.to_datetime(select_.index)
+        select_.index.name = 'datetime'
+        columns_name.append(f'{fac}_{rank}_{rtn}')
+        select_data = pd.concat([select_data,select_],axis=1,join='outer')
+        # print(select_data.shape)
+    length = select_data.shape[1]
+    
+    select_data.columns = columns_name
+    #  (按照每行非空的个数计算平均收益)
+    select_data['returns'] = select_data.sum(axis=1)
+    select_data['count'] = length - select_data.isna().sum(axis=1)
+    select_data['returns'] = select_data['returns'] / select_data['count']
+    select_data.index = pd.to_datetime(select_data.index)
+    select_data.index.name = 'datetime'
+    select_data.sort_index(inplace=True)
+
+    return select_data['returns'] / 100
+
+def get_factors_select_period(select_df,select_period = 1):
+    '''
+    summary:
+        根据select_period转换select_df，得到多日的调仓因子
+    parameter:
+        select_df: 每日因子选择结果
+        select_period: 选择周期
+    return:
+        select_df: 转换后的多日因子选择结果
+    '''
+    if select_period == 1:
+        return select_df
+    
+    select_idx = select_df.index
+    select_day = list(set([i[0] for i in select_idx]))
+    select_day.sort()
+
+    select_dict = {}
+    for i in range(len(select_day)):
+        if i % select_period == 0:
+            select_dict[select_day[i]] = select_df.loc[select_day[i]]
+        else:
+            select_dict[select_day[i]] = select_dict[select_day[i-1]]
+    # 将select_dict转换成df
+    return_df = pd.concat(select_dict,axis=0)
+    return return_df 
+
+def get_daily_select_returns(data_df,select_daily_df,tax = 0,select_period = 1):
+    '''
+    summary:
+        根据select_daily_df计算每日的long或short的returns
+    parameter:
+        data_df: 因子和收益数据(收益都乘以了100)
+        select_daily_df: 每日因子选择结果
+        select_period: 每日因子的调仓频率
+    return:
+        select_returns: 选出的因子的收益
+    '''
+    select_daily_df = get_factors_select_period(select_daily_df,select_period)
+
+    select_idx = select_daily_df.index
+    data_df['date'] = data_df.index.date
+    select_returns_ = {}
+    select_returns = {}
+    # 选出每天符合条件的因子收益
+    tax *= 100
+    
+    for date,fac,rank,rtn in select_idx:
+        select_ = (data_df[fac] == rank) & (data_df['date'] == date)
+        select_time = data_df[select_].index
+        time_ = re.findall(r'\d+',rtn)[-1]
+        for t in select_time:
+            # 每次选到都重复买入
+            # if t not in select_returns.keys():
+            #     select_returns[t] = 0
+            # select_returns[t] += (data_df.loc[t,rtn] - tax)
+            # (只买一次)
+            t_ = data_df.loc[t,f'future_{time_}_exit_dt']
+            if t not in select_returns_.keys():
+                select_returns_[t] = data_df.loc[t,rtn] - tax
+                select_returns[t_] = data_df.loc[t,rtn] - tax
+            else:
+                continue
+    select_returns = pd.Series(select_returns)
+    select_returns.index.name = 'datetime'
+    select_returns = pd.DataFrame(select_returns)    
+    select_returns.columns = ['returns']
+    select_returns.index = pd.to_datetime(select_returns.index)
+    select_returns.sort_index(inplace=True)
+
+    return select_returns['returns'] / 100
+        
+
+def create_pyfolio_input(factors = None,rtns = None,factor_select = None,daily_factor_select = None,tax = 0,select_period = 1):
+    '''
+    summary:
+        生成pyfolio需要的returns数据，利用pyfolio制作回测报告，可保存为html格式
+        factor_select和daily_factor_select为两种因子选择方式，可选其一,也可以都选
+    parameter:
+        factors: 因子数据 pd.DataFrame
+        rtns: 收益数据 pd.DataFrame(收益都乘以了100),rtn最好每个因子的收益周期都一致
+        factor_select: 因子选择结果(一段时间的) dict(分做多做空，factor_select['long'],'short')
+        daily_factor_select: 每日因子选择结果 dict(分做多做空，daily_factor_select['long'],'short')
+        select_period: 每日因子的调仓频率
+    return:
+        (factor_select和daily_factor_select只有一个不为None): returns_select: 因子选择结果的returns (dataframe: returns_long,returns_short,returns_total)
+        (都不为None时): list (returns_select,returns_daily_select) 
+        
+    '''
+    # if factors is None:
+    #     factors = self.rank_factors
+    # if rtns is None:
+    #     self.returns
+
+    if not isinstance(factors, pd.DataFrame) or not isinstance(rtns, pd.DataFrame):
+        raise TypeError("rank_factors and returns should be pandas DataFrame")
+    if not isinstance(factors.index, pd.core.indexes.datetimes.DatetimeIndex):
+        raise Exception("rank_factors的index应设为\"DatetimeIndex\"")
+    if not isinstance(rtns.index, pd.core.indexes.datetimes.DatetimeIndex):
+        raise Exception("returns的index应设为\"DatetimeIndex\"")
+    
+    if factor_select is None and daily_factor_select is None:
+        raise Exception("factor_select and daily_factor_select can't be None at the same time")
+    if factor_select is not None and daily_factor_select is not None:
+        # 同时存在两种因子选择方式，分别计算returns
+        # raise Exception("factor_select and daily_factor_select can't be not None at the same time")
+        print("同时存在两种因子选择方式，分别计算returns，返回list[returns_select,returns_daily_select]")
+        returns_select = create_pyfolio_input(factors,rtns,factor_select = factor_select,tax = tax,select_period = select_period)
+        returns_daily_select = create_pyfolio_input(factors,rtns,daily_factor_select = daily_factor_select,tax = tax,select_period=select_period)
+        return returns_select,returns_daily_select
+    
+    # 合并因子和收益数据
+    data_df: pd.DataFrame = pd.concat([factors, rtns], axis=1,
+                                          join="inner")
+    data_df.dropna(inplace=True)
+
+    returns_long = pd.DataFrame()
+    returns_short = pd.DataFrame()
+    bool_long = False
+    bool_short = False
+    f_s = None                         # factor_select or daily_factor_select
+
+    # 判断是阶段因子选择还是每日因子选择
+    if factor_select is not None:
+        f_s = factor_select
+        func_select = get_select_returns
+    elif daily_factor_select is not None:
+        f_s = daily_factor_select
+        func_select = get_daily_select_returns
+    
+    if not isinstance(f_s,dict):
+        raise TypeError("factor_select should be dict")
+
+    # 分别计算做多和做空的returns(可能只有一种)
+    if 'long' not in f_s.keys() and 'short' not in f_s.keys():
+        raise Exception("factor_select should have keys 'long' or 'short'")
+    
+    if 'long' in f_s.keys():
+        select_long = f_s['long']
+        if not isinstance(select_long, pd.DataFrame):
+            raise TypeError("factor_select['long'] should be pandas DataFrame")
+        if len(select_long) < 1:
+            raise Exception("factor_select['long'] should have at least one row")
+        bool_long = True
+        returns_long = func_select(data_df,select_long,tax,select_period)
+
+    if 'short' in f_s.keys():
+        select_short = f_s['short']
+        if not isinstance(select_short, pd.DataFrame):
+            raise TypeError("factor_select['short'] should be pandas DataFrame")
+        if len(select_short) < 1:
+            raise Exception("factor_select['short'] should have at least one row")
+        bool_short = True
+        # 做空tax为负，再乘以-1
+        returns_short = func_select(data_df,select_short,-tax,select_period) * -1
+
+    # 合并returns
+    if bool_long and bool_short:
+        returns_select = pd.concat([returns_long,returns_short],axis=1,join='outer')
+        returns_select.columns = ['returns_long','returns_short']
+        returns_select['returns_total'] = returns_select.sum(axis=1)
+        returns_select.sort_index(inplace=True)
+
+    elif bool_long:
+        returns_select = pd.DataFrame(returns_long)
+        returns_select.columns = ['returns_long']
+
+    elif bool_short:
+        returns_select = pd.DataFrame(returns_short)
+        returns_select.columns = ['returns_short']
+
+    if len(returns_select) < 1:
+        raise Exception("returns_select is empty")
+
+    return returns_select
+
+def _fig_to_base64(fig):  # 将图片转换为base64编码
+    """
+    将图片转换为base64编码
+    """
+    imgdata = io.BytesIO()
+    fig.savefig(imgdata, format='png')
+    imgdata.seek(0)
+
+    b64data = base64.b64encode(imgdata.getvalue()).decode('utf-8')
+    return b64data
+
+def plot_by_pyfolio(returns,returns_mul = 1,is_save = False,save_name = None):
+    '''
+    summary:
+        将每分钟收益转化为每日收益率，在除以乘数后，利用pyfolio画图
+    parameter:
+        returns: 因子选择后的收益序列
+        returns_mul: 收益乘数(因为收益率在每分钟都进行了交易，所以乘以一个乘数，使得日收益率更加合理，乘数可以是交易的分钟数，使得最大仓位为1)
+        is_save: 是否保存图片
+        save_name: 保存图片的名称(包含路径，名称，后缀。默认为pyfolio_plot.html)
+
+    '''
+    if not isinstance(returns, pd.Series):
+        raise TypeError("returns should be pandas Series")
+    if not isinstance(returns.index, pd.core.indexes.datetimes.DatetimeIndex):
+        raise Exception("returns的index应设为\"DatetimeIndex\"")
+    if len(returns) < 1:
+        raise Exception("returns should have at least one row")
+    
+    returns = returns * (1 / returns_mul)
+    returns_day = returns.resample('D').sum()
+    perf,draw_down,fig = pf.create_returns_tear_sheet(returns_day,benchmark_rets=None,return_fig=True)
+    if is_save:
+        # 将perf,draw_down,fig保存为html格式
+        if save_name is None:
+            save_name = 'pyfolio_plot.html'
+        perf = perf.to_html(float_format='{0:.2f}'.format)
+        draw_down = draw_down.to_html(float_format='{0:.2f}'.format)
+
+        html = '<h1 style="text-align:center">回测结果</h1>'
+        # 添加表格, 放在中间
+        html += f'<table style="margin-left:auto;margin-right:auto;">{perf}</table>'
+        html += f'<table style="margin-left:auto;margin-right:auto;">{draw_down}</table>'
+
+        # 添加图片,格式和表格一样
+        html += f'<img src="data:image/png;base64,{_fig_to_base64(fig)}" style="margin-left:auto;margin-right:auto;">'
+        with open(save_name, 'w') as f:
+            f.write(html)
+
+        
+
 
 class RankFactorAnalyzer:
     """
@@ -482,6 +755,10 @@ class RankFactorAnalyzer:
         select_short = df.copy()
         select_short["mean_rtn"] = -select_short["mean_rtn"]
         select_short["win_rate"] = 100 - select_short["win_rate"]
+        select_short = select_short[(select_short["mean_rtn"] > rtn) &
+                                    (select_short["win_rate"] > win_rate) &
+                                    (select_short["count"] > count)]
+        
         select_short = select_short.sort_values(by=sort_by, ascending=False)
         select_short = _cal_effective_period_acf(self.data,
                                                  select_short,
@@ -504,6 +781,7 @@ class RankFactorAnalyzer:
                              rolling_days: int = 5,
                              sort_by: str = "mean_rtn",
                              top_n=5,
+                             count = 50,
                              save=False,
                              symbol=None):
         """
@@ -554,6 +832,7 @@ class RankFactorAnalyzer:
                 rtn_df=_temp_rtns,
                 sort_by=sort_by,
                 top_n=top_n,
+                count=count,
                 show_result=False)
             _select_long = _select_long[:top_n]
             _select_short = _select_short[:top_n]
@@ -568,9 +847,10 @@ class RankFactorAnalyzer:
         print("short factor:")
         display(factors_daily_short)
         if save:
-            factors_daily_long.to_parquet(f".//data//{symbol}_daily_select_long_factors.parquet")
-            factors_daily_short.to_parquet(f".//data//{symbol}_daily_select_short_factors.parquet")
-            print(f"long factors saved to .//data//{symbol}_daily_select_factors.parquet")
+            factors_daily_long.to_parquet(f".//data//{symbol}_daily_select_long_factors_rolling{rolling_days}.parquet")
+            factors_daily_short.to_parquet(f".//data//{symbol}_daily_select_short_factors_rolling{rolling_days}.parquet")
+            print(f"long factors saved to .//data//{symbol}_daily_select_long_factors_rolling{rolling_days}.parquet")
+            print(f"short factors saved to .//data//{symbol}_daily_select_short_factors_rolling{rolling_days}.parquet")
 
         self.cal_results = False
         return factors_daily_long, factors_daily_short
